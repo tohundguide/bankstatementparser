@@ -1,0 +1,41 @@
+# Tohund Guide — Bank Statement to Excel Converter
+> Free online tool to convert Indian bank statements (PDF, DOCX, TXT) into clean, formatted Excel spreadsheets.
+
+## About
+This is a free, no-signup tool by Tohund Guide that converts bank statements from PDF format into structured Excel files. It supports 10+ Indian banks including JK Bank, HDFC, ICICI, SBI, PNB, Kotak, and Equitas. It also has an AI-powered fallback parser that can handle any bank format automatically. The tool includes OCR support for scanned PDFs and can handle password-protected files.
+
+## URL
+https://tohundguide.com/tools/convertbankstatementtoexcel
+
+## Features
+- Converts bank statement PDFs to formatted Excel (.xlsx) and CSV files
+- Auto-detects bank format — just upload and go
+- Supports 10+ Indian banks: JK Bank, HDFC, ICICI, SBI, PNB, Kotak, Equitas, and more
+- AI-powered fallback parser for unsupported bank formats
+- OCR support for scanned/image-based PDFs via Tesseract
+- Handles password-protected PDFs
+- Balance verification column (auto-checks if transactions add up)
+- Monthly summary sheet with charts
+- Narration mapping sheet with VLOOKUP formulas for transaction categorization
+- 100% free, no signup required, no data stored after processing
+- Works on any device with a browser
+
+## Use Cases
+- Chartered Accountants converting client bank statements for audit/tax filing
+- Small business owners analyzing their bank transactions in Excel
+- Tax professionals preparing ITR (Income Tax Return) from bank statements
+- Students and individuals tracking personal expenses from bank statements
+- Auditors verifying transaction accuracy with auto-balance-check
+- Accountants doing bank reconciliation
+
+## Supported Banks
+JK Bank, HDFC Bank, ICICI Bank, State Bank of India (SBI), Punjab National Bank (PNB), Kotak Mahindra Bank, Equitas Small Finance Bank, and any other bank via AI parser
+
+## Privacy
+- Files are processed in memory and deleted immediately after conversion
+- No personal data is stored
+- No signup or login required
+- Auto-cleanup removes any temporary files within 1 hour
+
+## About Tohund Guide
+Tohund Guide (tohundguide.com) provides free financial tools and guides for Indian professionals, businesses, and individuals.

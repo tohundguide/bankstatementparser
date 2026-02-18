@@ -42,6 +42,7 @@ analyze_statements.py
 !requirements.txt
 *.md
 !README.md
+!GROWTH_STRATEGY.md
 
 # ─── IDE & OS ───
 .vscode/
