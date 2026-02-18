@@ -1,0 +1,1794 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Statement Parser — Free PDF to Excel Converter</title>
+    <meta name="description"
+        content="Free tool to convert bank statements (PDF, DOCX, TXT) to Excel & CSV. Supports scanned PDFs with OCR, password-protected files, and 6+ Indian banks.">
+
+    <!-- Google Fonts — Clean, Claude-like typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;450;500;550;600;700&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&display=swap"
+        rel="stylesheet">
+
+    <style>
+        /* ═══════════════════════════════════════════
+           DESIGN SYSTEM — Claude.ai Inspired
+           Warm • Minimal • Spacious • Premium
+        ═══════════════════════════════════════════ */
+
+        :root {
+            /* Warm neutral palette */
+            --bg-page: #F5F0EA;
+            --bg-surface: #FFFFFF;
+            --bg-surface-hover: #FAFAF8;
+            --bg-elevated: #FFFFFF;
+            --bg-subtle: #F0EBE4;
+            --bg-wash: #EDE8E0;
+
+            /* Accent — warm terracotta/clay */
+            --accent: #C4704B;
+            --accent-soft: #D4845D;
+            --accent-hover: #B5613C;
+            --accent-bg: rgba(196, 112, 75, 0.08);
+            --accent-bg-strong: rgba(196, 112, 75, 0.12);
+            --accent-border: rgba(196, 112, 75, 0.25);
+
+            /* Text hierarchy */
+            --text-primary: #1A1612;
+            --text-secondary: #5C534A;
+            --text-tertiary: #8C8078;
+            --text-muted: #A89E95;
+            --text-on-accent: #FFFFFF;
+
+            /* Semantic */
+            --success: #2E7D5B;
+            --success-bg: rgba(46, 125, 91, 0.08);
+            --success-border: rgba(46, 125, 91, 0.2);
+            --error: #C1423F;
+            --error-bg: rgba(193, 66, 63, 0.06);
+            --error-border: rgba(193, 66, 63, 0.15);
+            --deposit-color: #2E7D5B;
+            --withdrawal-color: #C1423F;
+
+            /* Borders */
+            --border: #E0D9D0;
+            --border-light: #EBE6DF;
+            --border-strong: #CFC7BC;
+
+            /* Spacing */
+            --radius-xs: 8px;
+            --radius-sm: 12px;
+            --radius-md: 16px;
+            --radius-lg: 24px;
+            --radius-pill: 100px;
+
+            /* Shadows — soft, warm */
+            --shadow-xs: 0 1px 2px rgba(26, 22, 18, 0.04);
+            --shadow-sm: 0 1px 3px rgba(26, 22, 18, 0.06), 0 1px 2px rgba(26, 22, 18, 0.04);
+            --shadow-md: 0 4px 12px rgba(26, 22, 18, 0.06), 0 1px 3px rgba(26, 22, 18, 0.04);
+            --shadow-lg: 0 8px 32px rgba(26, 22, 18, 0.08), 0 2px 8px rgba(26, 22, 18, 0.04);
+            --shadow-focus: 0 0 0 3px rgba(196, 112, 75, 0.2);
+
+            /* Transitions */
+            --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+            --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+            --duration-fast: 150ms;
+            --duration-normal: 250ms;
+            --duration-slow: 400ms;
+        }
+
+        /* ─── Reset & Base ─── */
+        *,
+        *::before,
+        *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-page);
+            color: var(--text-primary);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            line-height: 1.6;
+            font-size: 15px;
+        }
+
+        /* ─── Layout ─── */
+        .page-wrapper {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        .container--wide {
+            max-width: 900px;
+        }
+
+        /* ─── Top Bar (subtle, minimal) ─── */
+        .topbar {
+            padding: 20px 0;
+            border-bottom: 1px solid var(--border-light);
+            background: rgba(245, 240, 234, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topbar-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--text-primary);
+        }
+
+        .brand-mark {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-soft));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .brand-text {
+            font-weight: 600;
+            font-size: 15px;
+            letter-spacing: -0.2px;
+        }
+
+        .topbar-badge {
+            font-size: 12px;
+            color: var(--text-tertiary);
+            background: var(--bg-subtle);
+            padding: 4px 10px;
+            border-radius: var(--radius-pill);
+            font-weight: 500;
+        }
+
+        /* ─── Hero Section ─── */
+        .hero {
+            padding: 64px 0 48px;
+            text-align: center;
+        }
+
+        .hero-eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--accent);
+            background: var(--accent-bg);
+            padding: 6px 14px;
+            border-radius: var(--radius-pill);
+            margin-bottom: 20px;
+            letter-spacing: 0.2px;
+        }
+
+        .hero h1 {
+            font-family: 'Fraunces', Georgia, serif;
+            font-size: 2.75rem;
+            font-weight: 600;
+            line-height: 1.15;
+            color: var(--text-primary);
+            letter-spacing: -1.5px;
+            margin-bottom: 14px;
+        }
+
+        .hero h1 span {
+            color: var(--accent);
+        }
+
+        .hero-subtitle {
+            font-size: 17px;
+            color: var(--text-tertiary);
+            line-height: 1.6;
+            max-width: 480px;
+            margin: 0 auto;
+            font-weight: 400;
+        }
+
+        /* ─── Main Card ─── */
+        .main-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 40px;
+            box-shadow: var(--shadow-md);
+            margin-bottom: 32px;
+            transition: box-shadow var(--duration-normal) var(--ease-out);
+        }
+
+        .main-card:hover {
+            box-shadow: var(--shadow-lg);
+        }
+
+        /* ─── Drop Zone ─── */
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius-md);
+            padding: 52px 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: all var(--duration-normal) var(--ease-out);
+            position: relative;
+            background: var(--bg-surface-hover);
+        }
+
+        .drop-zone:hover {
+            border-color: var(--accent-border);
+            background: var(--accent-bg);
+        }
+
+        .drop-zone.dragover {
+            border-color: var(--accent);
+            background: var(--accent-bg-strong);
+            transform: scale(1.005);
+            box-shadow: inset 0 0 0 1px var(--accent-border);
+        }
+
+        .drop-zone-icon {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 18px;
+            background: var(--bg-subtle);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all var(--duration-normal) var(--ease-out);
+        }
+
+        .drop-zone:hover .drop-zone-icon {
+            background: var(--accent-bg-strong);
+            transform: translateY(-2px);
+        }
+
+        .drop-zone-icon svg {
+            width: 26px;
+            height: 26px;
+            color: var(--text-tertiary);
+            transition: color var(--duration-fast);
+        }
+
+        .drop-zone:hover .drop-zone-icon svg {
+            color: var(--accent);
+        }
+
+        .drop-zone-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+
+        .drop-zone-hint {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .drop-zone-hint strong {
+            color: var(--text-tertiary);
+            font-weight: 600;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        /* ─── File Preview ─── */
+        .file-preview {
+            display: none;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 16px 20px;
+            align-items: center;
+            gap: 14px;
+            background: var(--bg-surface);
+            transition: all var(--duration-normal) var(--ease-out);
+        }
+
+        .file-preview.visible {
+            display: flex;
+        }
+
+        .file-preview-icon {
+            width: 42px;
+            height: 42px;
+            background: var(--accent-bg);
+            border-radius: var(--radius-xs);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .file-preview-icon svg {
+            width: 22px;
+            height: 22px;
+            color: var(--accent);
+        }
+
+        .file-preview-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .file-preview-name {
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .file-preview-size {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .file-preview-remove {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-tertiary);
+            border-radius: var(--radius-xs);
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            font-family: inherit;
+            transition: all var(--duration-fast);
+            flex-shrink: 0;
+        }
+
+        .file-preview-remove:hover {
+            border-color: var(--error-border);
+            color: var(--error);
+            background: var(--error-bg);
+        }
+
+        /* ─── Form Controls ─── */
+        .form-section {
+            margin-top: 24px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .form-select {
+            width: 100%;
+            padding: 11px 40px 11px 14px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all var(--duration-fast);
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' viewBox='0 0 16 16'%3E%3Cpath stroke='%238C8078' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+        }
+
+        .form-select:hover {
+            border-color: var(--border-strong);
+        }
+
+        .form-select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: var(--shadow-focus);
+        }
+
+        /* ─── Primary Button ─── */
+        .btn-primary {
+            width: 100%;
+            padding: 14px 24px;
+            margin-top: 24px;
+            background: var(--accent);
+            border: none;
+            border-radius: var(--radius-sm);
+            color: var(--text-on-accent);
+            font-family: inherit;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--duration-normal) var(--ease-out);
+            position: relative;
+            overflow: hidden;
+            letter-spacing: -0.1px;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 16px rgba(196, 112, 75, 0.25);
+        }
+
+        .btn-primary:active:not(:disabled) {
+            transform: translateY(0);
+            box-shadow: none;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .btn-primary.loading {
+            background: var(--accent-hover);
+        }
+
+        .btn-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        .btn-primary.loading .spinner {
+            display: block;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* ─── Progress ─── */
+        .progress-container {
+            display: none;
+            margin-top: 24px;
+            padding: 20px;
+            background: var(--bg-subtle);
+            border-radius: var(--radius-sm);
+        }
+
+        .progress-container.visible {
+            display: block;
+        }
+
+        .progress-track {
+            width: 100%;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: var(--accent);
+            border-radius: 2px;
+            transition: width var(--duration-slow) var(--ease-out);
+        }
+
+        .progress-label {
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-tertiary);
+            margin-top: 12px;
+            font-weight: 500;
+        }
+
+        /* ─── Result Section ─── */
+        .result-section {
+            display: none;
+            margin-top: 32px;
+            animation: fadeSlideIn 0.5s var(--ease-out);
+        }
+
+        .result-section.visible {
+            display: block;
+        }
+
+        @keyframes fadeSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(12px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Success Card */
+        .result-card {
+            background: var(--bg-surface);
+            border: 1px solid var(--success-border);
+            border-radius: var(--radius-lg);
+            padding: 32px;
+            box-shadow: var(--shadow-md);
+        }
+
+        .result-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            margin-bottom: 28px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .result-check {
+            width: 40px;
+            height: 40px;
+            background: var(--success-bg);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .result-check svg {
+            width: 22px;
+            height: 22px;
+            color: var(--success);
+        }
+
+        .result-header-text h2 {
+            font-family: 'Fraunces', Georgia, serif;
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: -0.5px;
+            margin-bottom: 4px;
+        }
+
+        .result-header-text p {
+            font-size: 13px;
+            color: var(--text-tertiary);
+        }
+
+        /* Stats Row */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--bg-subtle);
+            border-radius: var(--radius-sm);
+            padding: 16px;
+            text-align: center;
+            transition: transform var(--duration-fast) var(--ease-out);
+        }
+
+        .stat-card:hover {
+            transform: translateY(-1px);
+        }
+
+        .stat-value {
+            font-family: 'Fraunces', Georgia, serif;
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            letter-spacing: -0.5px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+            font-weight: 600;
+        }
+
+        /* Download Button */
+        .btn-download {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 13px 28px;
+            background: var(--success);
+            border: none;
+            border-radius: var(--radius-sm);
+            color: white;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all var(--duration-normal) var(--ease-out);
+        }
+
+        .btn-download:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 16px rgba(46, 125, 91, 0.3);
+            background: #267350;
+        }
+
+        .btn-download svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        /* ─── Preview Table ─── */
+        .preview-wrapper {
+            margin-top: 28px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .preview-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .preview-title svg {
+            width: 16px;
+            height: 16px;
+            color: var(--text-muted);
+        }
+
+        .table-container {
+            overflow-x: auto;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-surface);
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .data-table th {
+            background: var(--bg-subtle);
+            color: var(--text-tertiary);
+            padding: 10px 14px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+        }
+
+        .data-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-light);
+            color: var(--text-secondary);
+            vertical-align: top;
+        }
+
+        .data-table tbody tr {
+            transition: background var(--duration-fast);
+        }
+
+        .data-table tbody tr:hover td {
+            background: var(--bg-surface-hover);
+        }
+
+        .data-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+
+        .td-date {
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .td-particulars {
+            white-space: normal;
+            max-width: 260px;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .td-ref {
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .td-amount {
+            text-align: right;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+        }
+
+        .td-withdrawal {
+            color: var(--withdrawal-color);
+        }
+
+        .td-deposit {
+            color: var(--deposit-color);
+        }
+
+        .td-balance {
+            text-align: right;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+            font-weight: 500;
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .td-check {
+            text-align: center;
+            white-space: nowrap;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .td-check-ok {
+            color: #27AE60;
+        }
+
+        .td-check-fail {
+            color: #C0392B;
+            background: rgba(192, 57, 43, 0.06);
+        }
+
+        .td-check-na {
+            color: #7F8C8D;
+        }
+
+        /* ─── Error Card ─── */
+        .error-card {
+            display: none;
+            background: var(--bg-surface);
+            border: 1px solid var(--error-border);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            margin-top: 24px;
+            animation: fadeSlideIn 0.3s var(--ease-out);
+        }
+
+        .error-card.visible {
+            display: block;
+        }
+
+        .error-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .error-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--error-bg);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .error-icon svg {
+            width: 18px;
+            height: 18px;
+            color: var(--error);
+        }
+
+        .error-card h3 {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--error);
+        }
+
+        .error-card p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            line-height: 1.5;
+            margin-left: 42px;
+        }
+
+        /* ─── Feedback Consent Section ─── */
+        .feedback-section {
+            display: none;
+            margin-top: 16px;
+            margin-left: 42px;
+            padding: 16px;
+            background: rgba(99, 102, 241, 0.06);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            border-radius: var(--radius-sm);
+        }
+
+        .feedback-section.visible {
+            display: block;
+            animation: fadeSlideIn 0.3s var(--ease-out);
+        }
+
+        .feedback-section h4 {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .feedback-section p {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin: 0 0 12px;
+            line-height: 1.5;
+        }
+
+        .feedback-input-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .feedback-input-row input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-sm);
+            background: var(--bg-surface);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+        }
+
+        .feedback-input-row input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        .feedback-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .feedback-btn-submit {
+            background: var(--primary);
+            color: white;
+        }
+
+        .feedback-btn-submit:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .feedback-btn-skip {
+            background: transparent;
+            color: var(--text-secondary);
+        }
+
+        .feedback-btn-skip:hover {
+            color: var(--text-primary);
+        }
+
+        .feedback-consent-label {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            cursor: pointer;
+        }
+
+        .feedback-consent-label input[type="checkbox"] {
+            margin-top: 2px;
+            accent-color: var(--primary);
+        }
+
+        .feedback-success {
+            display: none;
+            padding: 12px 16px;
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: var(--radius-sm);
+            color: #10b981;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .feedback-success.visible {
+            display: block;
+            animation: fadeSlideIn 0.3s var(--ease-out);
+        }
+
+        /* ─── AI-Parsed Badge ─── */
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(99, 102, 241, 0.12));
+            border: 1px solid rgba(139, 92, 246, 0.25);
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #8b5cf6;
+            margin-left: 8px;
+            animation: fadeSlideIn 0.3s var(--ease-out);
+        }
+
+        .ai-badge svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        /* ─── Supported Banks ─── */
+        .banks-section {
+            text-align: center;
+            padding: 24px 0 12px;
+        }
+
+        .banks-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .banks-list {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .bank-chip {
+            font-size: 12px;
+            font-weight: 500;
+            padding: 5px 14px;
+            border-radius: var(--radius-pill);
+            border: 1px solid var(--border);
+            color: var(--text-tertiary);
+            background: var(--bg-surface);
+            transition: all var(--duration-fast);
+        }
+
+        .bank-chip.active {
+            border-color: var(--accent-border);
+            color: var(--accent);
+            background: var(--accent-bg);
+        }
+
+        /* ─── Footer ─── */
+        .footer {
+            text-align: center;
+            padding: 32px 0 24px;
+            color: var(--text-muted);
+            font-size: 12px;
+            border-top: 1px solid var(--border-light);
+            margin-top: 40px;
+        }
+
+        .footer a {
+            color: var(--text-tertiary);
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            color: var(--accent);
+        }
+
+        /* ─── Responsive ─── */
+        @media (max-width: 768px) {
+            .hero {
+                padding: 40px 0 32px;
+            }
+
+            .hero h1 {
+                font-size: 2rem;
+            }
+
+            .main-card {
+                padding: 28px 22px;
+            }
+
+            .drop-zone {
+                padding: 36px 20px;
+            }
+
+            .stats-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .result-card {
+                padding: 24px 20px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 0 16px;
+            }
+
+            .hero h1 {
+                font-size: 1.7rem;
+            }
+
+            .main-card {
+                padding: 22px 18px;
+                border-radius: var(--radius-md);
+            }
+
+            .topbar-badge {
+                display: none;
+            }
+        }
+
+        /* ─── Account Info ─── */
+        .account-info {
+            display: none;
+            background: var(--bg-subtle);
+            border-radius: var(--radius-sm);
+            padding: 16px 20px;
+            margin-bottom: 24px;
+        }
+
+        .account-info.visible {
+            display: block;
+        }
+
+        .account-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 24px;
+        }
+
+        .account-info-item {
+            font-size: 13px;
+        }
+
+        .account-info-label {
+            color: var(--text-muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            font-weight: 600;
+        }
+
+        .account-info-value {
+            color: var(--text-primary);
+            font-weight: 500;
+            margin-top: 2px;
+            word-break: break-all;
+        }
+
+        /* ─── Parse Another ─── */
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 20px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all var(--duration-fast);
+            margin-left: 10px;
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--border-strong);
+            background: var(--bg-subtle);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="page-wrapper">
+
+        <!-- ─── Top Bar ─── -->
+        <nav class="topbar">
+            <div class="container container--wide">
+                <div class="topbar-inner">
+                    <a href="/" class="brand">
+                        <div class="brand-mark">
+                            <svg width="16" height="16" fill="none" viewBox="0 0 24 24">
+                                <path fill="currentColor"
+                                    d="M4 4h4v4H4V4Zm6 0h4v4h-4V4Zm10 0h-4v4h4V4ZM4 10h4v4H4v-4Zm10 0h-4v4h4v-4Zm2 0h4v4h-4v-4ZM4 16h4v4H4v-4Zm10 0h-4v4h4v-4Zm6 0h-4v4h4v-4Z" />
+                            </svg>
+                        </div>
+                        <span class="brand-text">Bank Statement Parser</span>
+                    </a>
+                    <span class="topbar-badge">v1.0 — Local Processing</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- ─── Hero ─── -->
+        <section class="hero">
+            <div class="container">
+                <div class="hero-eyebrow">
+                    <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z" />
+                    </svg>
+                    Instant Conversion
+                </div>
+                <h1>Bank statement to <span>Excel</span>,<br>in seconds.</h1>
+                <p class="hero-subtitle">
+                    Upload your bank statement in PDF, DOCX, or TXT format.
+                    We'll parse every transaction and generate a clean Excel file.
+                </p>
+            </div>
+        </section>
+
+        <!-- ─── Main Upload Card ─── -->
+        <main class="container">
+            <div class="main-card" id="uploadCard">
+                <form id="parseForm" enctype="multipart/form-data">
+
+                    <!-- Drop Zone -->
+                    <div class="drop-zone" id="dropZone">
+                        <div class="drop-zone-icon">
+                            <svg fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="1.5"
+                                    d="M12 16V4m0 0-4 4m4-4 4 4M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" />
+                            </svg>
+                        </div>
+                        <div class="drop-zone-title">Drop your bank statement here</div>
+                        <div class="drop-zone-hint">or click to browse · Supports <strong>PDF</strong>,
+                            <strong>DOCX</strong>, <strong>TXT</strong> · Scanned PDFs supported via OCR · Max 50 MB
+                        </div>
+                        <input type="file" id="fileInput" name="file" class="file-input"
+                            accept=".pdf,.docx,.doc,.txt,.csv">
+                    </div>
+
+                    <!-- File Preview -->
+                    <div class="file-preview" id="filePreview">
+                        <div class="file-preview-icon">
+                            <svg fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="1.5"
+                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" />
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="1.5" d="M14 2v6h6M16 13H8m8 4H8m2-8H8" />
+                            </svg>
+                        </div>
+                        <div class="file-preview-info">
+                            <div class="file-preview-name" id="fileName"></div>
+                            <div class="file-preview-size" id="fileSize"></div>
+                        </div>
+                        <button type="button" class="file-preview-remove" id="removeFile">Remove</button>
+                    </div>
+
+                    <!-- Bank Selection -->
+                    <div class="form-section">
+                        <label class="form-label" for="bankSelect">Bank Format</label>
+                        <select id="bankSelect" name="bank" class="form-select">
+                            <option value="auto">Auto-Detect Bank</option>
+                            {% for bank in banks %}
+                            <option value="{{ bank.code }}">{{ bank.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <!-- Password (for encrypted PDFs) -->
+                    <div class="form-section" id="passwordSection" style="display:none">
+                        <label class="form-label" for="passwordInput">PDF Password</label>
+                        <input type="password" id="passwordInput" name="password" class="form-select"
+                            placeholder="Enter PDF password (if protected)">
+                        <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">Common: account
+                            number, DOB (DDMMYYYY), or PAN number</div>
+                    </div>
+
+                    <!-- Submit -->
+                    <button type="submit" class="btn-primary" id="parseBtn" disabled>
+                        <span class="btn-content">
+                            <div class="spinner"></div>
+                            <span id="btnText">Parse & Generate Excel</span>
+                        </span>
+                    </button>
+                </form>
+
+                <!-- Progress -->
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-track">
+                        <div class="progress-fill" id="progressBar"></div>
+                    </div>
+                    <div class="progress-label" id="progressText">Processing your statement...</div>
+                </div>
+            </div>
+
+            <!-- Error -->
+            <div class="error-card" id="errorCard">
+                <div class="error-header">
+                    <div class="error-icon">
+                        <svg fill="none" viewBox="0 0 24 24">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                        </svg>
+                    </div>
+                    <h3 id="errorTitle">Something went wrong</h3>
+                </div>
+                <p id="errorMessage"></p>
+
+                <!-- Feedback Consent Section (shown when parsing fails) -->
+                <div class="feedback-section" id="feedbackSection">
+                    <h4>
+                        <svg fill="none" viewBox="0 0 24 24" width="14" height="14">
+                            <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 6v6l4 2m6-2a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z" />
+                        </svg>
+                        Help us add support for your bank
+                    </h4>
+                    <p>Share this file so we can analyze the format and add support. Your data stays private on our
+                        server.</p>
+
+                    <div class="feedback-input-row">
+                        <input type="text" id="feedbackBankName"
+                            placeholder="Which bank is this from? (e.g. SBI, HDFC, Axis)">
+                    </div>
+
+                    <label class="feedback-consent-label">
+                        <input type="checkbox" id="feedbackConsent">
+                        <span>I consent to sharing this file anonymously to help improve the parser. No personal data
+                            will be stored beyond what's in the statement file itself.</span>
+                    </label>
+
+                    <div style="display: flex; gap: 8px;">
+                        <button class="feedback-btn feedback-btn-submit" id="feedbackSubmitBtn" disabled
+                            onclick="submitFeedback()">
+                            Share &amp; Help Improve
+                        </button>
+                        <button class="feedback-btn feedback-btn-skip"
+                            onclick="document.getElementById('feedbackSection').classList.remove('visible')">
+                            No thanks
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Feedback Success Message -->
+                <div class="feedback-success" id="feedbackSuccess"></div>
+            </div>
+
+            <!-- Result Section -->
+            <div class="result-section" id="resultSection">
+                <div class="result-card">
+                    <!-- Success Header -->
+                    <div class="result-header">
+                        <div class="result-check">
+                            <svg fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="2" d="M20 6 9 17l-5-5" />
+                            </svg>
+                        </div>
+                        <div class="result-header-text">
+                            <h2>Parsed Successfully <span class="ai-badge" id="aiBadge" style="display:none">
+                                    <svg fill="none" viewBox="0 0 24 24">
+                                        <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                            stroke-width="2"
+                                            d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 0 0-2.455 2.456Z" />
+                                    </svg>
+                                    AI Parsed
+                                </span></h2>
+                            <p id="resultBank">Bank • Period</p>
+                        </div>
+                    </div>
+
+                    <!-- Account Info -->
+                    <div class="account-info" id="accountInfo">
+                        <div class="account-info-grid" id="accountInfoGrid"></div>
+                    </div>
+
+                    <!-- Stats -->
+                    <div class="stats-row" id="statsGrid"></div>
+
+                    <!-- Actions -->
+                    <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                        <a class="btn-download" id="downloadBtn" href="#">
+                            <svg fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M12 4v12m0 0-4-4m4 4 4-4M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
+                            </svg>
+                            Download Excel
+                        </a>
+                        <a class="btn-secondary" id="csvDownloadBtn" href="#"
+                            style="text-decoration:none; display:inline-flex; align-items:center; gap:6px;">
+                            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="2"
+                                    d="M12 4v12m0 0-4-4m4 4 4-4M4 17v1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-1" />
+                            </svg>
+                            Download CSV
+                        </a>
+                        <button class="btn-secondary" id="parseAnother" type="button">
+                            <svg width="14" height="14" fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="2" d="M12 5v14m-7-7h14" />
+                            </svg>
+                            Parse Another
+                        </button>
+                    </div>
+
+                    <!-- Preview Table -->
+                    <div class="preview-wrapper">
+                        <div class="preview-title">
+                            <svg fill="none" viewBox="0 0 24 24">
+                                <path stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"
+                                    stroke-width="1.5"
+                                    d="M3 10h18M3 14h18M12 3v18M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+                            </svg>
+                            Preview — first 10 transactions
+                        </div>
+                        <div class="table-container">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Particulars</th>
+                                        <th>Chq / Ref No.</th>
+                                        <th style="text-align:right">Withdrawals</th>
+                                        <th style="text-align:right">Deposits</th>
+                                        <th style="text-align:right">Balance</th>
+                                        <th style="text-align:center">Check</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="previewBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Supported Banks -->
+            <div class="banks-section">
+                <div class="banks-label">Supported Banks</div>
+                <div class="banks-list">
+                    {% for bank in banks %}
+                    <span class="bank-chip active">{{ bank.name }}</span>
+                    {% endfor %}
+                    <span class="bank-chip">+ More Coming Soon</span>
+                </div>
+            </div>
+
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="container">
+                All data is processed locally on your machine — nothing is uploaded to any server.<br>
+                Built for <a href="#">Tohund Guide</a>
+            </div>
+        </footer>
+
+    </div>
+
+    <script>
+        /* ═══════════════════════════════
+           Application Logic
+        ═══════════════════════════════ */
+
+        const $ = id => document.getElementById(id);
+
+        const dropZone = $('dropZone');
+        const fileInput = $('fileInput');
+        const filePreview = $('filePreview');
+        const fileName = $('fileName');
+        const fileSize = $('fileSize');
+        const removeFile = $('removeFile');
+        const parseBtn = $('parseBtn');
+        const btnText = $('btnText');
+        const parseForm = $('parseForm');
+        const progressContainer = $('progressContainer');
+        const progressBar = $('progressBar');
+        const progressText = $('progressText');
+        const resultSection = $('resultSection');
+        const errorCard = $('errorCard');
+
+        // ─── Drop Zone ───
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        ['dragleave', 'dragend'].forEach(evt => {
+            dropZone.addEventListener(evt, () => dropZone.classList.remove('dragover'));
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                handleFileSelect(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) handleFileSelect(fileInput.files[0]);
+        });
+
+        function handleFileSelect(file) {
+            fileName.textContent = file.name;
+            fileSize.textContent = formatBytes(file.size);
+            filePreview.classList.add('visible');
+            dropZone.style.display = 'none';
+            parseBtn.disabled = false;
+            // Show password field for PDF files
+            const isPdf = file.name.toLowerCase().endsWith('.pdf');
+            $('passwordSection').style.display = isPdf ? '' : 'none';
+        }
+
+        removeFile.addEventListener('click', () => {
+            fileInput.value = '';
+            filePreview.classList.remove('visible');
+            dropZone.style.display = '';
+            parseBtn.disabled = true;
+        });
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // ─── Parse Another ───
+        $('parseAnother').addEventListener('click', () => {
+            resultSection.classList.remove('visible');
+            errorCard.classList.remove('visible');
+            fileInput.value = '';
+            filePreview.classList.remove('visible');
+            dropZone.style.display = '';
+            parseBtn.disabled = true;
+            $('passwordSection').style.display = 'none';
+            $('passwordInput').value = '';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+
+        // ─── Form Submit ───
+        parseForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            resultSection.classList.remove('visible');
+            errorCard.classList.remove('visible');
+
+            progressContainer.classList.add('visible');
+            parseBtn.disabled = true;
+            parseBtn.classList.add('loading');
+            btnText.textContent = 'Processing...';
+
+            let progress = 0;
+            const steps = [
+                'Extracting text from document...',
+                'Detecting bank format...',
+                'Parsing transactions...',
+                'Building Excel file...',
+            ];
+
+            const progressInterval = setInterval(() => {
+                progress = Math.min(progress + Math.random() * 12, 92);
+                progressBar.style.width = progress + '%';
+                const step = Math.min(Math.floor(progress / 25), steps.length - 1);
+                progressText.textContent = steps[step];
+            }, 350);
+
+            try {
+                const formData = new FormData(parseForm);
+                const response = await fetch('/parse', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                clearInterval(progressInterval);
+                progressBar.style.width = '100%';
+                progressText.textContent = 'Complete!';
+
+                if (data.success) {
+                    setTimeout(() => showResult(data), 400);
+                } else if (data.needs_password) {
+                    // Show password field and prompt user
+                    $('passwordSection').style.display = '';
+                    $('passwordInput').focus();
+                    setTimeout(() => showError(data.error, data), 400);
+                } else {
+                    setTimeout(() => showError(data.error, data), 400);
+                }
+            } catch (err) {
+                clearInterval(progressInterval);
+                showError('Network error: ' + err.message);
+            } finally {
+                setTimeout(() => {
+                    progressContainer.classList.remove('visible');
+                    progressBar.style.width = '0%';
+                    parseBtn.disabled = false;
+                    parseBtn.classList.remove('loading');
+                    btnText.textContent = 'Parse & Generate Excel';
+                }, 800);
+            }
+        });
+
+        function showResult(data) {
+            // Header
+            $('resultBank').textContent = `${data.bank_name} · ${data.period}`;
+
+            // AI Badge
+            const aiBadge = $('aiBadge');
+            aiBadge.style.display = data.parsed_by === 'ai' ? 'inline-flex' : 'none';
+
+            const downloadUrl = data.download_url;
+            const csvDownloadUrl = data.csv_download_url;
+            const downloadBtn = $('downloadBtn');
+            const csvBtn = $('csvDownloadBtn');
+
+            // Use explicit filenames from server response
+            const excelFilename = data.excel_filename || decodeURIComponent(downloadUrl.split('/').pop());
+            const csvFilename = data.csv_filename || (csvDownloadUrl ? decodeURIComponent(csvDownloadUrl.split('/').pop()) : '');
+
+            // Download helper — uses hidden iframe for reliable filename from server headers
+            function triggerDownload(url) {
+                // Remove any existing download iframe
+                const old = document.getElementById('downloadFrame');
+                if (old) old.remove();
+
+                const iframe = document.createElement('iframe');
+                iframe.id = 'downloadFrame';
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+                iframe.src = url;
+
+                // Clean up after download starts
+                setTimeout(() => {
+                    iframe.remove();
+                }, 30000);
+            }
+
+            // Excel download
+            downloadBtn.href = downloadUrl;
+            downloadBtn.setAttribute('download', excelFilename);
+            downloadBtn.onclick = (e) => {
+                e.preventDefault();
+                triggerDownload(downloadUrl);
+            };
+
+            // CSV download
+            if (csvDownloadUrl && csvBtn) {
+                csvBtn.href = csvDownloadUrl;
+                csvBtn.setAttribute('download', csvFilename);
+                csvBtn.onclick = (e) => {
+                    e.preventDefault();
+                    triggerDownload(csvDownloadUrl);
+                };
+            }
+
+            // Account info
+            if (data.account_info) {
+                const info = data.account_info;
+                const grid = $('accountInfoGrid');
+                grid.innerHTML = '';
+                const fields = [
+                    ['Account No.', info.account_number],
+                    ['IFSC', info.ifsc],
+                    ['Holder', info.account_holder],
+                    ['Type', info.type],
+                ];
+                fields.forEach(([label, value]) => {
+                    if (value) {
+                        grid.innerHTML += `
+                            <div class="account-info-item">
+                                <div class="account-info-label">${label}</div>
+                                <div class="account-info-value">${value}</div>
+                            </div>`;
+                    }
+                });
+                $('accountInfo').classList.add('visible');
+            }
+
+            // Stats
+            const statsGrid = $('statsGrid');
+            const p = data.period.split(' to ');
+            const vs = data.verification_stats || { matched: 0, total: 0, percent: 0 };
+            const vsColor = vs.percent === 100 ? '#27AE60' : (vs.percent >= 80 ? '#E67E22' : '#C0392B');
+            statsGrid.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${data.total_transactions.toLocaleString()}</div>
+                    <div class="stat-label">Transactions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${data.bank_name.split(' ')[0]}</div>
+                    <div class="stat-label">Bank</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${p[0] || '—'}</div>
+                    <div class="stat-label">From</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${p[1] || '—'}</div>
+                    <div class="stat-label">To</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:${vsColor}">${vs.percent}%</div>
+                    <div class="stat-label">Verified (${vs.matched}/${vs.total})</div>
+                </div>
+            `;
+
+            // Preview Table
+            const tbody = $('previewBody');
+            tbody.innerHTML = '';
+            data.preview.forEach(txn => {
+                const row = document.createElement('tr');
+                const chk = txn.check || '';
+                let chkClass = 'td-check-na';
+                if (chk.startsWith('✓')) chkClass = 'td-check-ok';
+                else if (chk.startsWith('✗')) chkClass = 'td-check-fail';
+                row.innerHTML = `
+                    <td class="td-date">${txn.date || '—'}</td>
+                    <td class="td-particulars">${txn.particulars}</td>
+                    <td class="td-ref">${txn.chq_ref || '—'}</td>
+                    <td class="td-amount td-withdrawal">${txn.withdrawal ? '₹' + fmtAmt(txn.withdrawal) : ''}</td>
+                    <td class="td-amount td-deposit">${txn.deposit ? '₹' + fmtAmt(txn.deposit) : ''}</td>
+                    <td class="td-balance">${txn.balance}</td>
+                    <td class="td-check ${chkClass}">${chk}</td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            resultSection.classList.add('visible');
+
+            // Smooth scroll to result
+            setTimeout(() => {
+                resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 100);
+        }
+
+        // ── Current feedback context ──
+        let _feedbackId = null;
+
+        function showError(message, data) {
+            $('errorMessage').textContent = message;
+            errorCard.classList.add('visible');
+
+            // Reset feedback UI
+            const fbSection = $('feedbackSection');
+            const fbSuccess = $('feedbackSuccess');
+            fbSection.classList.remove('visible');
+            fbSuccess.classList.remove('visible');
+            $('feedbackBankName').value = '';
+            $('feedbackConsent').checked = false;
+            $('feedbackSubmitBtn').disabled = true;
+            _feedbackId = null;
+
+            // Show feedback form if eligible
+            if (data && data.feedback_eligible && data.feedback_id) {
+                _feedbackId = data.feedback_id;
+                fbSection.classList.add('visible');
+            }
+        }
+
+        // Enable/disable submit button based on consent
+        $('feedbackConsent').addEventListener('change', function () {
+            $('feedbackSubmitBtn').disabled = !this.checked;
+        });
+
+        async function submitFeedback() {
+            const bankName = $('feedbackBankName').value.trim();
+            const consent = $('feedbackConsent').checked;
+
+            if (!consent) return;
+            if (!_feedbackId) return;
+
+            const btn = $('feedbackSubmitBtn');
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+
+            try {
+                const resp = await fetch('/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        feedback_id: _feedbackId,
+                        bank_name: bankName || 'Unknown',
+                        consent: true,
+                    }),
+                });
+
+                const result = await resp.json();
+
+                // Hide the form, show success
+                $('feedbackSection').classList.remove('visible');
+                const fbSuccess = $('feedbackSuccess');
+                fbSuccess.textContent = result.message || 'Thank you! We will add support for this bank soon.';
+                fbSuccess.classList.add('visible');
+            } catch (err) {
+                btn.textContent = 'Error — try again';
+                btn.disabled = false;
+                console.error('Feedback submit error:', err);
+            }
+        }
+
+        function fmtAmt(val) {
+            const num = Number(val.replace(/,/g, ''));
+            return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+    </script>
+</body>
+
+</html>

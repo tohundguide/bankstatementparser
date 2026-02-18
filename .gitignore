@@ -1,0 +1,57 @@
+# ─── Sensitive Data ───
+Ref Docs/
+
+# ─── Build & Deploy ───
+docker-compose.yml
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ─── Virtual Environments ───
+venv/
+env/
+.venv/
+.env
+
+# ─── Uploaded & Generated Files ───
+uploads/*
+!uploads/.gitkeep
+output/*
+!output/.gitkeep
+feedback/*
+!feedback/.gitkeep
+learned/cache/*
+!learned/cache/.gitkeep
+
+# ─── Test & Debug Files ───
+test_*.py
+check_*.py
+deep_analyze.py
+extract_docx.py
+analyze_statements.py
+*.log
+*.txt
+!requirements.txt
+*.md
+!README.md
+
+# ─── IDE & OS ───
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store
+
+# ─── Gemini ───
+.gemini/
+.agent/
