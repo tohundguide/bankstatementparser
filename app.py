@@ -69,6 +69,16 @@ def _cleanup_old_files():
 _cleanup_thread = threading.Thread(target=_cleanup_old_files, daemon=True)
 _cleanup_thread.start()
 
+
+@app.route('/llms.txt')
+def llms_txt():
+    """Serve AI-readable description (like robots.txt but for LLMs)."""
+    return send_file(
+        os.path.join(os.path.dirname(__file__), 'static', 'llms.txt'),
+        mimetype='text/plain'
+    )
+
+
 @app.route('/')
 def index():
     """Render the main upload page."""
