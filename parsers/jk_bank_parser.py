@@ -74,7 +74,7 @@ class JKBankParser(BaseBankParser):
         re.compile(r'A/C NO:', re.I),
         re.compile(r'Printed By', re.I),
         re.compile(r'^\s*TO:\s*$', re.I),
-        re.compile(r'M/S\.\.', re.I),
+        re.compile(r'M/S\.', re.I),
         re.compile(r'S/O\s+SHRI', re.I),
         re.compile(r'C/O\s+FOOD', re.I),
         re.compile(r'SRINAGAR,JAMMU', re.I),
@@ -136,8 +136,8 @@ class JKBankParser(BaseBankParser):
             if m:
                 info['type'] = m.group(1).strip()
             
-            if 'M/S..' in line_s:
-                info['account_holder'] = line_s.replace('M/S..', '').strip()
+            if line_s.startswith('M/S'):
+                info['account_holder'] = re.sub(r'^M/S\.+\s*', '', line_s).strip()
             
             if 'KHONMOH' in line_s and 'SRINAGAR' in line_s:
                 info['branch'] = line_s
@@ -159,11 +159,37 @@ class JKBankParser(BaseBankParser):
                 return True
         return False
     
-    def _parse_line(self, line: str) -> Dict:
+    def _detect_format(self, raw_text: str) -> str:
         """
-        Parse a single line using fixed column positions.
+        Detect whether this is a wide-format (90+ cols) or narrow-format statement.
         
-        Returns dict with: date, particulars, chq_ref, withdrawal, deposit, balance
+        Narrow format appears in CC (Cash Credit) statements where pdfplumber
+        extracts shorter lines (~40-50 chars) with amounts at variable positions.
+        Wide format is the standard savings/current account format with fixed columns.
+        """
+        lines = raw_text.split('\n')
+        # Check the average length of data lines (non-header, non-empty)
+        data_lengths = []
+        for line in lines[:200]:
+            stripped = line.rstrip()
+            if stripped and not self._should_skip(stripped) and len(stripped) > 15:
+                data_lengths.append(len(stripped))
+        
+        if not data_lengths:
+            return 'wide'
+        
+        avg_len = sum(data_lengths) / len(data_lengths)
+        return 'narrow' if avg_len < 65 else 'wide'
+    
+    def _parse_line(self, line: str, fmt: str = 'wide') -> Dict:
+        """
+        Parse a single line from a JK Bank statement.
+        
+        Supports two formats:
+          - 'wide': Fixed column positions (standard savings/current account)
+          - 'narrow': Variable positions (CC/Cash Credit accounts)
+        
+        Returns dict with: date, particulars, chq_ref, withdrawal, deposit, balance, _amount
         """
         result = {
             'date': '',
@@ -172,6 +198,7 @@ class JKBankParser(BaseBankParser):
             'withdrawal': '',
             'deposit': '',
             'balance': '',
+            '_amount': '',  # Raw amount (classified later for narrow format)
         }
         
         if not line or not line.strip():
@@ -199,20 +226,23 @@ class JKBankParser(BaseBankParser):
                 continue
             amounts.append((am.start(), am.group()))
         
-        # 4. Classify amounts by position
-        # Withdrawals: right-aligned in cols 51-63 (amounts start at pos 51-61)
-        # Deposits: right-aligned in cols 64-76 (amounts start at pos 64+)
-        # Larger numbers shift left within their column, hence 64 not 65
-        for pos, val in amounts:
-            if pos >= 64:
-                result['deposit'] = val
-            elif pos >= 51:
-                result['withdrawal'] = val
+        # 4. Classify amounts
+        if fmt == 'wide':
+            # Wide format: fixed column positions
+            # Withdrawals: cols 51-63, Deposits: cols 64+
+            for pos, val in amounts:
+                if pos >= 64:
+                    result['deposit'] = val
+                elif pos >= 51:
+                    result['withdrawal'] = val
+        else:
+            # Narrow format: amounts at variable positions
+            # Store the first non-balance amount as _amount
+            # W vs D will be determined later by comparing balances
+            if amounts:
+                result['_amount'] = amounts[0][1]
         
         # 5. Extract text regions
-        # Particulars: from after date (col 14) to cheque column (col 32)
-        # Chq/Ref: from col 32 to withdrawal column (col 51)
-        
         if dm:
             text_start = dm.end()
         else:
@@ -228,11 +258,10 @@ class JKBankParser(BaseBankParser):
         text_region = line_no_bal[text_start:first_amount_pos]
         
         # Split text region into particulars and chq/ref using column boundary
-        # Column boundary at position 32 (relative to original line)
         chq_col_start = 32
         
-        if text_start < chq_col_start and first_amount_pos > chq_col_start:
-            # Both columns present in this line
+        if fmt == 'wide' and text_start < chq_col_start and first_amount_pos > chq_col_start:
+            # Wide format: split at fixed column boundary
             part_text = line_no_bal[text_start:chq_col_start].strip()
             chq_text = line_no_bal[chq_col_start:first_amount_pos].strip()
             
@@ -241,7 +270,6 @@ class JKBankParser(BaseBankParser):
                 result['particulars'] = part_text
                 result['chq_ref'] = chq_text
             else:
-                # It's all particulars (no cheque number, just text continuation)
                 result['particulars'] = text_region.strip()
         else:
             result['particulars'] = text_region.strip()
@@ -253,14 +281,14 @@ class JKBankParser(BaseBankParser):
         Parse all transactions from the raw text.
         
         Algorithm:
-        1. Split into lines
-        2. Filter out header/footer/separator lines
-        3. Group consecutive lines into transactions:
-           - A new transaction starts with a date or B/F
-           - Lines without a date are continuations of the previous transaction
-        4. For each transaction group, merge the parsed columns
-        5. Handle page-break continuations (orphan lines)
+        1. Detect format (wide vs narrow)
+        2. Split into lines, filter headers/footers
+        3. Group consecutive lines into transactions
+        4. Merge each group into a single transaction
+        5. Handle page-break continuations
+        6. For narrow format: classify amounts as W/D using balance comparison
         """
+        fmt = self._detect_format(raw_text)
         all_lines = raw_text.split('\n')
         
         # Filter to transaction data lines only
@@ -276,7 +304,7 @@ class JKBankParser(BaseBankParser):
         current_has_date = False
         
         for line in data_lines:
-            parsed = self._parse_line(line)
+            parsed = self._parse_line(line, fmt)
             has_date = bool(parsed['date'])
             is_bf = bool(self.BF_RE.match(line))
             
@@ -298,6 +326,7 @@ class JKBankParser(BaseBankParser):
                         'withdrawal': '',
                         'deposit': '',
                         'balance': bal_m.group(0).strip() if bal_m else bm.group(1).strip(),
+                        '_amount': '',
                     }]
             else:
                 # Continuation line
@@ -327,18 +356,76 @@ class JKBankParser(BaseBankParser):
                     prev['withdrawal'] = txn['withdrawal']
                 if txn['deposit'] and not prev['deposit']:
                     prev['deposit'] = txn['deposit']
+                if txn.get('_amount') and not prev.get('_amount'):
+                    prev['_amount'] = txn['_amount']
                 if txn['balance']:
                     prev['balance'] = txn['balance']
             else:
                 merged.append(txn)
         
+        # For narrow format: classify _amount as withdrawal or deposit
+        # by comparing consecutive balances
+        if fmt == 'narrow':
+            self._classify_amounts_by_balance(merged)
+        
         # Clean up: remove internal flags and normalize spaces
         for txn in merged:
             txn.pop('_has_date', None)
+            txn.pop('_amount', None)
             txn['particulars'] = re.sub(r'\s{2,}', ' ', txn['particulars']).strip()
             txn['chq_ref'] = re.sub(r'\s{2,}', ' ', txn['chq_ref']).strip()
         
         return merged
+    
+    def _classify_amounts_by_balance(self, transactions: List[Dict]):
+        """
+        For narrow-format statements, determine withdrawal vs deposit
+        by comparing consecutive balances.
+        
+        Logic:
+          - Parse balance to numeric (handle Dr/Cr suffix)
+          - If balance increased (Dr went up, or Cr went down), it's a withdrawal
+          - If balance decreased (Dr went down, or Cr went up), it's a deposit
+        """
+        def parse_balance(bal_str: str) -> Optional[float]:
+            if not bal_str:
+                return None
+            m = re.match(r'([\d,]+\.\d{2})(Dr|Cr)$', bal_str)
+            if not m:
+                return None
+            val = float(m.group(1).replace(',', ''))
+            # Dr = debit balance (loan outstanding), Cr = credit balance
+            return val if m.group(2) == 'Dr' else -val
+        
+        prev_balance = None
+        for txn in transactions:
+            curr_balance = parse_balance(txn['balance'])
+            amount_str = txn.get('_amount', '')
+            
+            if amount_str and curr_balance is not None and prev_balance is not None:
+                # Compare balances to determine direction
+                diff = curr_balance - prev_balance
+                
+                if diff > 0:
+                    # Balance (Dr) increased = withdrawal/debit
+                    txn['withdrawal'] = amount_str
+                elif diff < 0:
+                    # Balance (Dr) decreased = deposit/credit  
+                    txn['deposit'] = amount_str
+                else:
+                    # No change — unusual, put as withdrawal by default
+                    txn['withdrawal'] = amount_str
+            elif amount_str and not txn['withdrawal'] and not txn['deposit']:
+                # No previous balance to compare — try heuristics
+                # If particulars contain 'CR' or 'By Cash' or 'UPI.*CR' -> likely deposit
+                part = txn.get('particulars', '').upper()
+                if any(kw in part for kw in ['/CR/', 'BY CASH', 'BY CLG', 'NEFT-', 'RTGS-']):
+                    txn['deposit'] = amount_str
+                else:
+                    txn['withdrawal'] = amount_str
+            
+            if curr_balance is not None:
+                prev_balance = curr_balance
     
     def _merge_group(self, group: List[Dict], has_date: bool) -> Optional[Dict]:
         """Merge a group of parsed lines into one transaction."""
@@ -353,6 +440,7 @@ class JKBankParser(BaseBankParser):
             'deposit': '',
             'balance': '',
             '_has_date': has_date,
+            '_amount': '',  # For narrow format: raw amount before W/D classification
         }
         
         parts = []
@@ -374,6 +462,9 @@ class JKBankParser(BaseBankParser):
             if line['deposit'] and not txn['deposit']:
                 txn['deposit'] = line['deposit']
             
+            if line.get('_amount') and not txn['_amount']:
+                txn['_amount'] = line['_amount']
+            
             if line['balance']:
                 txn['balance'] = line['balance']
         
@@ -381,7 +472,7 @@ class JKBankParser(BaseBankParser):
         txn['chq_ref'] = ' '.join(refs)
         
         # Skip if it's just empty
-        if not txn['particulars'] and not txn['balance'] and not txn['withdrawal'] and not txn['deposit']:
+        if not txn['particulars'] and not txn['balance'] and not txn['withdrawal'] and not txn['deposit'] and not txn['_amount']:
             return None
         
         return txn
