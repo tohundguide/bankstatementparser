@@ -23,21 +23,23 @@ RUN mkdir -p uploads output feedback learned/cache learned/profiles
 # Environment
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
-ENV PORT=5000
+ENV PORT=8080
+ENV SCRIPT_NAME=/tools/bankstatementparser
 
 # Expose port
-EXPOSE 5000
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/status')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/tools/bankstatementparser/status')" || exit 1
 
 # Run with Gunicorn (production WSGI server)
-# Workers = 2 (good for 1-2 CPU cores on free tiers)
+# 1 worker + 2 threads (512MB RAM can't handle 2 full worker forks with OCR)
 # Timeout = 120s (bank parsing can take time for large files)
 CMD gunicorn app:app \
     --bind 0.0.0.0:${PORT} \
-    --workers 2 \
+    --workers 1 \
+    --threads 2 \
     --timeout 120 \
     --access-logfile - \
     --error-logfile -

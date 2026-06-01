@@ -35,7 +35,7 @@ jobs:
             echo "══════════════════════════════════════"
 
             # Pull latest code
-            cd $APP_DIR/BankstatementParser
+            cd $APP_DIR/BankstatementParser/bankstatementparser
             git fetch origin main
             git reset --hard origin/main
 

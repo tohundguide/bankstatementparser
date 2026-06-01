@@ -36,7 +36,17 @@ from parsers.registry import detect_bank, get_parser
 from parsers import llm_parser
 from exporters.excel_exporter import export_to_excel, export_to_csv
 
+from flask_cors import CORS
+
 app = Flask(__name__)
+
+# Enable CORS for the Next.js frontend
+CORS(app, origins=[
+    'https://tohundguide.com',
+    'https://www.tohundguide.com',
+    'https://tohundguide.fly.dev',
+    'http://localhost:3000',  # dev
+], supports_credentials=False)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
@@ -250,9 +260,9 @@ def parse_statement():
             'account_info': result.get('account_info', {}),
             'total_transactions': len(transactions),
             'period': result.get('period', 'N/A'),
-            'download_url': f'/download/{excel_filename}',
+            'download_url': url_for('download_file', filename=excel_filename),
             'excel_filename': excel_filename,
-            'csv_download_url': f'/download/{csv_filename}',
+            'csv_download_url': url_for('download_file', filename=csv_filename),
             'csv_filename': csv_filename,
             'verification_stats': {
                 'matched': v_match,
@@ -488,10 +498,10 @@ def batch_parse():
                 for cp in csv_paths:
                     zf.write(cp, os.path.basename(cp))
             
-            download_url = f'/download/{zip_filename}'
+            download_url = url_for('download_file', filename=zip_filename)
             download_name = zip_filename
         else:
-            download_url = f'/download/{os.path.basename(excel_paths[0])}'
+            download_url = url_for('download_file', filename=os.path.basename(excel_paths[0]))
             download_name = os.path.basename(excel_paths[0])
         
         return jsonify({
