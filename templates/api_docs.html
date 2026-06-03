@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Statement Parser API — Documentation</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface-2: #242836;
+            --border: #2e3345;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #818cf8;
+            --accent-dim: #6366f1;
+            --green: #34d399;
+            --red: #f87171;
+            --orange: #fb923c;
+            --code-bg: #151820;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+        .container { max-width: 860px; margin: 0 auto; padding: 40px 24px 80px; }
+
+        /* Header */
+        .hero { text-align: center; padding: 48px 0 40px; border-bottom: 1px solid var(--border); margin-bottom: 40px; }
+        .hero h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 8px; }
+        .hero h1 span { color: var(--accent); }
+        .hero p { color: var(--text-muted); font-size: 16px; max-width: 540px; margin: 0 auto; }
+        .badge { display: inline-block; background: var(--accent-dim); color: white; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; margin-bottom: 12px; letter-spacing: 0.5px; }
+
+        /* Sections */
+        h2 { font-size: 22px; font-weight: 700; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+        h3 { font-size: 16px; font-weight: 700; margin: 24px 0 10px; color: var(--accent); }
+        p { color: var(--text-muted); margin-bottom: 12px; font-size: 14px; }
+
+        /* Code blocks */
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 18px 20px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 12px 0 20px;
+            color: var(--text);
+        }
+        code {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            background: var(--surface-2);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--accent);
+        }
+        pre code { background: none; padding: 0; color: inherit; }
+        .comment { color: #6b7280; }
+        .string { color: var(--green); }
+        .key { color: var(--accent); }
+        .method { font-weight: 700; }
+        .method-post { color: var(--orange); }
+        .method-get { color: var(--green); }
+
+        /* Endpoint cards */
+        .endpoint {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin: 16px 0;
+        }
+        .endpoint-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        .endpoint-method {
+            font-size: 11px;
+            font-weight: 800;
+            padding: 4px 10px;
+            border-radius: 6px;
+            letter-spacing: 0.5px;
+        }
+        .endpoint-method.post { background: rgba(251, 146, 60, 0.15); color: var(--orange); }
+        .endpoint-method.get { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+        .endpoint-path { font-family: monospace; font-size: 14px; font-weight: 600; }
+        .endpoint p { margin: 0; }
+
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; margin: 12px 0 20px; font-size: 13px; }
+        th { text-align: left; padding: 10px 14px; background: var(--surface); color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+        td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text); }
+        td:first-child { font-family: monospace; font-weight: 600; color: var(--accent); white-space: nowrap; }
+        tr:last-child td { border-bottom: none; }
+
+        /* Alerts */
+        .alert {
+            background: var(--surface);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            padding: 14px 18px;
+            margin: 16px 0;
+            font-size: 13px;
+        }
+        .alert-warn { border-left-color: var(--orange); }
+        .alert strong { color: var(--text); }
+
+        /* Error codes */
+        .error-code { color: var(--red); font-weight: 700; }
+
+        /* Footer */
+        .footer { text-align: center; padding-top: 40px; border-top: 1px solid var(--border); margin-top: 40px; color: var(--text-muted); font-size: 13px; }
+        .footer a { color: var(--accent); text-decoration: none; }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            .container { padding: 20px 16px 60px; }
+            .hero h1 { font-size: 24px; }
+            pre { font-size: 12px; padding: 14px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Hero -->
+        <div class="hero">
+            <div class="badge">API v1</div>
+            <h1>Bank Statement <span>Parser API</span></h1>
+            <p>Programmatically parse Indian bank statements (PDF, DOCX, TXT) into structured JSON data. Supports 10+ banks with AI fallback.</p>
+        </div>
+
+        <!-- Authentication -->
+        <h2>🔑 Authentication</h2>
+        <p>All API endpoints (except <code>/api/v1/status</code> and this docs page) require an API key.</p>
+        <p>Pass your key via the <code>X-API-Key</code> header:</p>
+        <pre><code>curl -X POST {{ base_url }}/api/v1/parse \
+  -H <span class="string">"X-API-Key: your-api-key"</span> \
+  -F <span class="string">"file=@statement.pdf"</span></code></pre>
+
+        <p>Alternatively, use the <code>api_key</code> query parameter:</p>
+        <pre><code>curl -X POST <span class="string">"{{ base_url }}/api/v1/parse?api_key=your-api-key"</span> \
+  -F <span class="string">"file=@statement.pdf"</span></code></pre>
+
+        <div class="alert">
+            <strong>Need an API key?</strong> Contact <a href="mailto:wecare@tohundguide.com" style="color: var(--accent);">wecare@tohundguide.com</a> to request access.
+        </div>
+
+        <!-- Rate Limits -->
+        <h2>⏱️ Rate Limits</h2>
+        <p>API requests are rate-limited per key using a sliding window:</p>
+        <table>
+            <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+            <tbody>
+                <tr><td>Requests per hour</td><td>{{ rate_limit }} requests</td></tr>
+                <tr><td>Max file size</td><td>50 MB</td></tr>
+            </tbody>
+        </table>
+        <p>Rate limit info is included in response headers:</p>
+        <pre><code>X-RateLimit-Limit: {{ rate_limit }}
+X-RateLimit-Remaining: 28
+Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code></pre>
+
+        <!-- Endpoints -->
+        <h2>📡 Endpoints</h2>
+
+        <!-- POST /api/v1/parse -->
+        <div class="endpoint">
+            <div class="endpoint-header">
+                <span class="endpoint-method post">POST</span>
+                <span class="endpoint-path">/api/v1/parse</span>
+            </div>
+            <p>Upload and parse a bank statement. Returns structured transaction data.</p>
+        </div>
+
+        <h3>Request (multipart/form-data)</h3>
+        <table>
+            <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+                <tr><td>file</td><td>File</td><td>Yes</td><td>Bank statement (PDF, DOCX, TXT, CSV). Max 50MB.</td></tr>
+                <tr><td>bank</td><td>String</td><td>No</td><td>Bank code (e.g. <code>jkbank</code>, <code>hdfc</code>). Default: <code>auto</code> (auto-detect).</td></tr>
+                <tr><td>password</td><td>String</td><td>No</td><td>PDF password, if the file is password-protected.</td></tr>
+                <tr><td>format</td><td>String</td><td>No</td><td><code>json</code> (default) — full transaction data. <code>excel</code> — includes download URL for .xlsx file.</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Example Request</h3>
+        <pre><code>curl -X POST {{ base_url }}/api/v1/parse \
+  -H <span class="string">"X-API-Key: your-api-key"</span> \
+  -F <span class="string">"file=@hdfc_april_2025.pdf"</span> \
+  -F <span class="string">"bank=auto"</span></code></pre>
+
+        <h3>Success Response (200)</h3>
+        <pre><code>{
+  <span class="key">"success"</span>: true,
+  <span class="key">"bank_name"</span>: <span class="string">"HDFC Bank"</span>,
+  <span class="key">"account_info"</span>: {
+    <span class="key">"account_number"</span>: <span class="string">"50100XXXXXX"</span>,
+    <span class="key">"holder"</span>: <span class="string">"JOHN DOE"</span>
+  },
+  <span class="key">"total_transactions"</span>: 145,
+  <span class="key">"period"</span>: <span class="string">"01 Apr 2025 - 30 Apr 2025"</span>,
+  <span class="key">"parsed_by"</span>: <span class="string">"structured"</span>,
+  <span class="key">"verification"</span>: {
+    <span class="key">"matched"</span>: 140,
+    <span class="key">"total"</span>: 144,
+    <span class="key">"percent"</span>: 97.2
+  },
+  <span class="key">"transactions"</span>: [
+    {
+      <span class="key">"date"</span>: <span class="string">"01/04/2025"</span>,
+      <span class="key">"particulars"</span>: <span class="string">"UPI/CR/412XXXXXX/GOOGLE PAY"</span>,
+      <span class="key">"chq_ref"</span>: <span class="string">""</span>,
+      <span class="key">"withdrawal"</span>: <span class="string">""</span>,
+      <span class="key">"deposit"</span>: <span class="string">"15000.00"</span>,
+      <span class="key">"balance"</span>: <span class="string">"45230.50"</span>
+    }
+    <span class="comment">// ... all transactions</span>
+  ],
+  <span class="key">"preview"</span>: [ <span class="comment">/* first 10 rows with balance verification */</span> ]
+}</code></pre>
+
+        <h3>Error Response (4xx)</h3>
+        <pre><code>{
+  <span class="key">"error"</span>: <span class="string">"Could not parse this bank statement."</span>,
+  <span class="key">"code"</span>: <span class="string">"PARSE_FAILED"</span>
+}</code></pre>
+
+        <hr style="border: none; border-top: 1px solid var(--border); margin: 32px 0;">
+
+        <!-- GET /api/v1/status -->
+        <div class="endpoint">
+            <div class="endpoint-header">
+                <span class="endpoint-method get">GET</span>
+                <span class="endpoint-path">/api/v1/status</span>
+            </div>
+            <p>Check system status, supported banks, and available features. <strong>No authentication required.</strong></p>
+        </div>
+
+        <h3>Example</h3>
+        <pre><code>curl {{ base_url }}/api/v1/status</code></pre>
+
+        <h3>Response</h3>
+        <pre><code>{
+  <span class="key">"version"</span>: <span class="string">"2.1"</span>,
+  <span class="key">"banks"</span>: [
+    { <span class="key">"code"</span>: <span class="string">"jkbank"</span>, <span class="key">"name"</span>: <span class="string">"JK Bank"</span> },
+    { <span class="key">"code"</span>: <span class="string">"hdfc"</span>, <span class="key">"name"</span>: <span class="string">"HDFC Bank"</span> }
+    <span class="comment">// ...</span>
+  ],
+  <span class="key">"features"</span>: {
+    <span class="key">"excel_export"</span>: true,
+    <span class="key">"ai_fallback"</span>: true,
+    <span class="key">"ocr_scanned_pdfs"</span>: true
+  }
+}</code></pre>
+
+        <hr style="border: none; border-top: 1px solid var(--border); margin: 32px 0;">
+
+        <!-- GET /api/v1/download -->
+        <div class="endpoint">
+            <div class="endpoint-header">
+                <span class="endpoint-method get">GET</span>
+                <span class="endpoint-path">/api/v1/download/&lt;filename&gt;</span>
+            </div>
+            <p>Download a generated Excel or CSV file. Only available when <code>format=excel</code> is used in the parse request. <strong>Requires authentication.</strong></p>
+        </div>
+
+        <div class="alert alert-warn">
+            <strong>⚠️ Files expire after 1 hour.</strong> Download immediately after parsing.
+        </div>
+
+        <!-- Error Codes -->
+        <h2>❌ Error Codes</h2>
+        <table>
+            <thead><tr><th>Code</th><th>HTTP</th><th>Description</th></tr></thead>
+            <tbody>
+                <tr><td class="error-code">MISSING_KEY</td><td>401</td><td>No API key provided in request.</td></tr>
+                <tr><td class="error-code">INVALID_KEY</td><td>403</td><td>The API key is not recognized.</td></tr>
+                <tr><td class="error-code">RATE_LIMITED</td><td>429</td><td>Too many requests. Check <code>Retry-After</code> header.</td></tr>
+                <tr><td class="error-code">NO_FILE</td><td>400</td><td>No file was uploaded.</td></tr>
+                <tr><td class="error-code">UNSUPPORTED_FORMAT</td><td>400</td><td>File type not supported.</td></tr>
+                <tr><td class="error-code">PASSWORD_REQUIRED</td><td>400</td><td>PDF is password-protected. Provide the <code>password</code> field.</td></tr>
+                <tr><td class="error-code">EXTRACTION_FAILED</td><td>400</td><td>Could not extract text from the file.</td></tr>
+                <tr><td class="error-code">PARSE_FAILED</td><td>400</td><td>Could not parse transactions from the extracted text.</td></tr>
+                <tr><td class="error-code">SERVER_ERROR</td><td>500</td><td>Unexpected server error.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- Supported Banks -->
+        <h2>🏦 Supported Banks</h2>
+        <p>The parser has built-in support for these banks. For any other bank, the AI fallback parser will attempt to extract transactions automatically.</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-top: 12px;">
+            {% for bank in banks %}
+            <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px;">
+                <span style="color: var(--accent); font-family: monospace; font-weight: 600;">{{ bank.code }}</span>
+                <span style="color: var(--text-muted); margin-left: 6px;">{{ bank.name }}</span>
+            </div>
+            {% endfor %}
+            {% if ai_available %}
+            <div style="background: rgba(129, 140, 248, 0.08); border: 1px dashed var(--accent-dim); border-radius: 8px; padding: 10px 14px; font-size: 13px;">
+                <span style="color: var(--accent); font-weight: 600;">🤖 + Any Bank</span>
+                <span style="color: var(--text-muted); margin-left: 6px;">via AI</span>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            <p>Bank Statement Parser API v1 · Powered by <a href="https://tohundguide.com">Tohund Guide</a></p>
+            <p style="margin-top: 4px;">Questions? <a href="mailto:wecare@tohundguide.com">wecare@tohundguide.com</a></p>
+        </div>
+    </div>
+</body>
+</html>

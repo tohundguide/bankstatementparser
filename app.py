@@ -35,18 +35,23 @@ from extractors.text_extractor import extract_text, check_ocr_available
 from parsers.registry import detect_bank, get_parser
 from parsers import llm_parser
 from exporters.excel_exporter import export_to_excel, export_to_csv
+from api_auth import require_api_key
 
 from flask_cors import CORS
 
 app = Flask(__name__)
 
-# Enable CORS for the Next.js frontend
-CORS(app, origins=[
-    'https://tohundguide.com',
-    'https://www.tohundguide.com',
-    'https://tohundguide.fly.dev',
-    'http://localhost:3000',  # dev
-], supports_credentials=False)
+# Enable CORS:
+# - Restrictive for web UI routes (tohundguide.com only)
+# - Open for /api/* routes (third-party consumers call from anywhere)
+CORS(app, resources={
+    r'/api/*': {'origins': '*'},
+    r'/*': {'origins': [
+        'https://tohundguide.com',
+        'https://www.tohundguide.com',
+        'http://localhost:3000',
+    ]},
+}, supports_credentials=False)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
@@ -581,6 +586,285 @@ def status():
             'feedback_collection': True,
         }
     })
+
+
+# ══════════════════════════════════════════════════════════════
+#                    PUBLIC API (v1)
+# ══════════════════════════════════════════════════════════════
+
+@app.route('/api/v1/docs')
+def api_docs():
+    """Serve the API documentation page (no auth required)."""
+    from parsers.registry import get_supported_banks
+    banks = get_supported_banks()
+    rate_limit = int(os.environ.get('API_RATE_LIMIT', '30'))
+    base_url = request.host_url.rstrip('/')
+    return render_template(
+        'api_docs.html',
+        banks=banks,
+        rate_limit=rate_limit,
+        base_url=base_url,
+        ai_available=llm_parser.is_available(),
+    )
+
+
+@app.route('/api/v1/status')
+def api_status():
+    """Public API status — no auth required. Same as /status but under /api/v1."""
+    from parsers.registry import get_supported_banks
+    ocr = check_ocr_available()
+    banks = get_supported_banks()
+    return jsonify({
+        'version': '2.1',
+        'banks': [{'code': b['code'], 'name': b['name']} for b in banks],
+        'ocr': ocr,
+        'llm': llm_parser.get_status(),
+        'features': {
+            'excel_export': True,
+            'csv_export': True,
+            'batch_upload': True,
+            'monthly_summary': True,
+            'password_pdfs': True,
+            'ocr_scanned_pdfs': ocr['available'],
+            'ai_fallback': llm_parser.is_available(),
+        }
+    })
+
+
+@app.route('/api/v1/parse', methods=['POST'])
+@require_api_key
+def api_parse():
+    """
+    Public API: Parse a bank statement and return structured JSON.
+
+    Unlike the web /parse endpoint, this returns the FULL transactions
+    array in the JSON response — the core value for automation.
+
+    Form fields:
+      - file (required): The bank statement file
+      - bank (optional, default 'auto'): Bank code or 'auto'
+      - password (optional): PDF password
+      - format (optional, default 'json'): 'json' or 'excel'
+    """
+    filepath = None
+    try:
+        # 1. Validate file
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded.', 'code': 'NO_FILE'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected.', 'code': 'NO_FILE'}), 400
+
+        _, ext = os.path.splitext(file.filename)
+        ext = ext.lower()
+
+        if ext not in ['.pdf', '.docx', '.doc', '.txt', '.csv']:
+            return jsonify({
+                'error': f'Unsupported file format: {ext}. Supported: PDF, DOCX, TXT, CSV',
+                'code': 'UNSUPPORTED_FORMAT',
+            }), 400
+
+        # 2. Save temporarily
+        unique_id = str(uuid.uuid4())[:8]
+        safe_filename = f"api_{unique_id}_{file.filename}"
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+        file.save(filepath)
+
+        # 3. Extract text
+        password = request.form.get('password', '').strip() or None
+
+        try:
+            raw_text = extract_text(filepath, ext, password=password)
+        except ValueError as e:
+            error_msg = str(e)
+            if 'password' in error_msg.lower():
+                return jsonify({
+                    'error': error_msg,
+                    'code': 'PASSWORD_REQUIRED',
+                }), 400
+            return jsonify({'error': error_msg, 'code': 'EXTRACTION_FAILED'}), 400
+
+        if not raw_text or len(raw_text.strip()) < 50:
+            return jsonify({
+                'error': 'Could not extract meaningful text from the file.',
+                'code': 'EXTRACTION_FAILED',
+            }), 400
+
+        # 4. Detect bank
+        bank_code = request.form.get('bank', 'auto')
+        used_llm = False
+
+        if bank_code == 'auto':
+            bank_code = detect_bank(raw_text)
+
+        # 5. Parse (structured first, then LLM fallback)
+        result = None
+
+        if bank_code:
+            parser = get_parser(bank_code)
+            if parser:
+                result = parser.parse(raw_text)
+                if not result or not result.get('transactions'):
+                    result = None
+
+        if not result and llm_parser.is_available():
+            result = llm_parser.parse_with_llm(raw_text)
+            if result and result.get('transactions'):
+                used_llm = True
+            else:
+                result = None
+
+        if not result:
+            return jsonify({
+                'error': 'Could not parse this bank statement. The format may not be supported yet.',
+                'code': 'PARSE_FAILED',
+            }), 400
+
+        # 6. Build full transaction list
+        transactions = result['transactions']
+        output_format = request.form.get('format', 'json').lower()
+
+        # Balance verification
+        from exporters.excel_exporter import _parse_balance_value
+        prev_bal = None
+        v_match = 0
+        v_total = 0
+        preview_rows = []
+
+        for idx, t in enumerate(transactions):
+            bal = _parse_balance_value(t['balance'])
+            if idx == 0:
+                chk = '○ Opening'
+            elif prev_bal is not None and bal is not None:
+                try:
+                    w = float(str(t['withdrawal']).replace(',', '')) if t['withdrawal'] else 0
+                    d = float(str(t['deposit']).replace(',', '')) if t['deposit'] else 0
+                except (ValueError, TypeError):
+                    w, d = 0, 0
+                exp = prev_bal + d - w
+                diff = bal - exp
+                v_total += 1
+                if abs(diff) < 0.02:
+                    chk = '✓ Match'
+                    v_match += 1
+                else:
+                    chk = f'✗ Diff: {diff:+,.2f}'
+            else:
+                chk = '? N/A'
+            prev_bal = bal
+
+            # Build preview for first 10
+            if idx < 10:
+                preview_rows.append({
+                    'date': t['date'],
+                    'particulars': t['particulars'],
+                    'chq_ref': t['chq_ref'],
+                    'withdrawal': t['withdrawal'],
+                    'deposit': t['deposit'],
+                    'balance': t['balance'],
+                    'check': chk,
+                })
+
+        v_pct = (v_match / v_total * 100) if v_total > 0 else 0
+
+        # 7. Build response
+        response_data = {
+            'success': True,
+            'bank_name': result['bank_name'],
+            'account_info': result.get('account_info', {}),
+            'total_transactions': len(transactions),
+            'period': result.get('period', 'N/A'),
+            'parsed_by': 'ai' if used_llm else 'structured',
+            'verification': {
+                'matched': v_match,
+                'total': v_total,
+                'percent': round(v_pct, 1),
+            },
+            'transactions': [
+                {
+                    'date': t['date'],
+                    'particulars': t['particulars'],
+                    'chq_ref': t['chq_ref'],
+                    'withdrawal': t['withdrawal'],
+                    'deposit': t['deposit'],
+                    'balance': t['balance'],
+                }
+                for t in transactions
+            ],
+            'preview': preview_rows,
+        }
+
+        # Optional: generate Excel/CSV and include download link
+        if output_format == 'excel':
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            safe_bank_name = re.sub(r'[^\w]+', '_', result['bank_name']).strip('_')
+
+            excel_filename = f"API_Statement_{safe_bank_name}_{timestamp}.xlsx"
+            excel_path = os.path.join(app.config['OUTPUT_FOLDER'], excel_filename)
+            export_to_excel(result, excel_path)
+
+            csv_filename = f"API_Statement_{safe_bank_name}_{timestamp}.csv"
+            csv_path = os.path.join(app.config['OUTPUT_FOLDER'], csv_filename)
+            export_to_csv(result, csv_path)
+
+            response_data['download_url'] = url_for('api_download', filename=excel_filename)
+            response_data['excel_filename'] = excel_filename
+            response_data['csv_download_url'] = url_for('api_download', filename=csv_filename)
+            response_data['csv_filename'] = csv_filename
+
+        # Log API usage
+        label = getattr(request, '_api_key_label', 'unknown')
+        print(f"  [API] Parsed {len(transactions)} txns for '{label}' "
+              f"(bank={result['bank_name']}, parser={'ai' if used_llm else 'structured'})")
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': f'Server error: {str(e)}', 'code': 'SERVER_ERROR'}), 500
+
+    finally:
+        try:
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+        except:
+            pass
+
+
+@app.route('/api/v1/download/<filename>')
+@require_api_key
+def api_download(filename):
+    """Download a generated file (auth required). Reuses the main download logic."""
+    filepath = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'File not found. It may have expired (files are deleted after 1 hour).', 'code': 'NOT_FOUND'}), 404
+
+    if filename.endswith('.xlsx'):
+        mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    elif filename.endswith('.csv'):
+        mimetype = 'text/csv'
+    elif filename.endswith('.zip'):
+        mimetype = 'application/zip'
+    else:
+        mimetype = 'application/octet-stream'
+
+    from flask import make_response
+    from urllib.parse import quote
+
+    with open(filepath, 'rb') as f:
+        data = f.read()
+
+    response = make_response(data)
+    response.headers['Content-Type'] = mimetype
+    response.headers['Content-Length'] = len(data)
+    safe_filename = quote(filename)
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="{filename}"; filename*=UTF-8\'\'\'{safe_filename}'
+    )
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+
+    return response
 
 
 if __name__ == '__main__':
