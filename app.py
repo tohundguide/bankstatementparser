@@ -631,6 +631,146 @@ def api_status():
     })
 
 
+# ── URL Download Helper (for API) ──
+
+def _download_from_url(url: str, upload_folder: str) -> tuple[str, str]:
+    """
+    Download a file from a URL (Google Drive, Dropbox, OneDrive, or direct).
+    
+    Returns: (filepath, original_filename)
+    Raises: ValueError on failure.
+    """
+    import urllib.request
+    import urllib.error
+    from urllib.parse import urlparse, parse_qs
+    
+    original_url = url
+    filename = None
+    
+    # ── Google Drive URL handling ──
+    if 'drive.google.com' in url:
+        # Extract file ID from various Google Drive URL formats
+        file_id = None
+        
+        if '/file/d/' in url:
+            # https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+            parts = url.split('/file/d/')
+            if len(parts) > 1:
+                file_id = parts[1].split('/')[0].split('?')[0]
+        elif 'id=' in url:
+            # https://drive.google.com/open?id=FILE_ID
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            file_id = params.get('id', [None])[0]
+        
+        if not file_id:
+            raise ValueError('Could not extract file ID from Google Drive URL. Use format: https://drive.google.com/file/d/FILE_ID/view')
+        
+        # Convert to direct download URL
+        url = f'https://drive.google.com/uc?export=download&id={file_id}'
+    
+    # ── Dropbox URL handling ──
+    elif 'dropbox.com' in url:
+        # Replace dl=0 with dl=1 for direct download
+        url = url.replace('dl=0', 'dl=1')
+        if 'dl=1' not in url:
+            url += ('&' if '?' in url else '?') + 'dl=1'
+    
+    # ── OneDrive URL handling ──
+    elif '1drv.ms' in url or 'onedrive.live.com' in url:
+        url = url.replace('redir?', 'download?')
+    
+    # ── Download the file ──
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (BankStatementParser/2.1)',
+        })
+        
+        with urllib.request.urlopen(req, timeout=60) as response:
+            # Check for Google Drive large file confirmation page
+            content_type = response.headers.get('Content-Type', '')
+            
+            if 'text/html' in content_type and 'drive.google.com' in original_url:
+                # Google Drive serves an HTML confirmation page for large files
+                html = response.read().decode('utf-8', errors='ignore')
+                
+                # Look for the confirm token
+                import re as _re
+                confirm_match = _re.search(r'confirm=([0-9A-Za-z_-]+)', html)
+                if confirm_match:
+                    confirm_token = confirm_match.group(1)
+                    # Extract file_id again
+                    file_id_match = _re.search(r'id=([0-9A-Za-z_-]+)', url)
+                    if file_id_match:
+                        confirmed_url = f'https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id_match.group(1)}'
+                        req2 = urllib.request.Request(confirmed_url, headers={
+                            'User-Agent': 'Mozilla/5.0 (BankStatementParser/2.1)',
+                        })
+                        with urllib.request.urlopen(req2, timeout=60) as resp2:
+                            data = resp2.read()
+                            # Try to get filename from Content-Disposition
+                            cd = resp2.headers.get('Content-Disposition', '')
+                            if 'filename=' in cd:
+                                filename = cd.split('filename=')[-1].strip('"\'')
+                else:
+                    raise ValueError('Google Drive file is too large or requires sign-in. Make sure the file is publicly shared.')
+            else:
+                data = response.read()
+                # Try to get filename from Content-Disposition
+                cd = response.headers.get('Content-Disposition', '')
+                if 'filename=' in cd:
+                    filename = cd.split('filename=')[-1].strip('"\'')
+        
+        # Size check
+        max_size = 50 * 1024 * 1024  # 50MB
+        if len(data) > max_size:
+            raise ValueError(f'File too large ({len(data) / 1024 / 1024:.1f}MB). Maximum: 50MB.')
+        
+        if len(data) < 100:
+            raise ValueError('Downloaded file is too small or empty. Check the URL and sharing permissions.')
+        
+        # Determine filename and extension
+        if not filename:
+            # Try to guess from URL path
+            parsed = urlparse(original_url)
+            path_parts = parsed.path.rstrip('/').split('/')
+            for part in reversed(path_parts):
+                if '.' in part and not part.startswith('.'):
+                    filename = part
+                    break
+        
+        if not filename:
+            # Default filename — try to detect from content
+            if data[:4] == b'%PDF':
+                filename = 'downloaded_statement.pdf'
+            elif data[:2] == b'PK':  # ZIP-based (DOCX)
+                filename = 'downloaded_statement.docx'
+            else:
+                filename = 'downloaded_statement.pdf'  # assume PDF
+        
+        # Save to uploads
+        unique_id = str(uuid.uuid4())[:8]
+        safe_name = f"api_url_{unique_id}_{filename}"
+        filepath = os.path.join(upload_folder, safe_name)
+        
+        with open(filepath, 'wb') as f:
+            f.write(data)
+        
+        return filepath, filename
+        
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ValueError('File not found at the given URL (404). Check the link.')
+        elif e.code == 403:
+            raise ValueError('Access denied (403). Make sure the file is publicly shared.')
+        else:
+            raise ValueError(f'Failed to download file: HTTP {e.code}')
+    except urllib.error.URLError as e:
+        raise ValueError(f'Could not reach the URL: {str(e.reason)}')
+    except TimeoutError:
+        raise ValueError('Download timed out (60s). The file may be too large or the server is slow.')
+
+
 @app.route('/api/v1/parse', methods=['POST'])
 @require_api_key
 def api_parse():
@@ -641,35 +781,62 @@ def api_parse():
     array in the JSON response — the core value for automation.
 
     Form fields:
-      - file (required): The bank statement file
+      - file (optional): The bank statement file upload
+      - url (optional): URL to download the file from (Google Drive, Dropbox, direct link)
       - bank (optional, default 'auto'): Bank code or 'auto'
       - password (optional): PDF password
       - format (optional, default 'json'): 'json' or 'excel'
+    
+    Either 'file' or 'url' must be provided.
     """
     filepath = None
     try:
-        # 1. Validate file
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file uploaded.', 'code': 'NO_FILE'}), 400
+        # 1. Get file — either from upload or URL download
+        file_url = request.form.get('url', '').strip()
+        has_file = 'file' in request.files and request.files['file'].filename != ''
 
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected.', 'code': 'NO_FILE'}), 400
+        if not has_file and not file_url:
+            return jsonify({
+                'error': 'No file provided. Upload a file OR provide a URL (Google Drive, Dropbox, direct link).',
+                'code': 'NO_FILE',
+            }), 400
 
-        _, ext = os.path.splitext(file.filename)
-        ext = ext.lower()
+        if file_url:
+            # Download from URL
+            try:
+                filepath, orig_filename = _download_from_url(file_url, app.config['UPLOAD_FOLDER'])
+                _, ext = os.path.splitext(orig_filename)
+                ext = ext.lower()
+                print(f"  [API] Downloaded from URL: {orig_filename} ({ext})")
+            except ValueError as e:
+                return jsonify({
+                    'error': str(e),
+                    'code': 'URL_DOWNLOAD_FAILED',
+                }), 400
+        else:
+            # Standard file upload
+            file = request.files['file']
+            _, ext = os.path.splitext(file.filename)
+            ext = ext.lower()
 
+            if ext not in ['.pdf', '.docx', '.doc', '.txt', '.csv']:
+                return jsonify({
+                    'error': f'Unsupported file format: {ext}. Supported: PDF, DOCX, TXT, CSV',
+                    'code': 'UNSUPPORTED_FORMAT',
+                }), 400
+
+            # Save temporarily
+            unique_id = str(uuid.uuid4())[:8]
+            safe_filename = f"api_{unique_id}_{file.filename}"
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+            file.save(filepath)
+
+        # Validate extension (for URL-downloaded files too)
         if ext not in ['.pdf', '.docx', '.doc', '.txt', '.csv']:
             return jsonify({
                 'error': f'Unsupported file format: {ext}. Supported: PDF, DOCX, TXT, CSV',
                 'code': 'UNSUPPORTED_FORMAT',
             }), 400
-
-        # 2. Save temporarily
-        unique_id = str(uuid.uuid4())[:8]
-        safe_filename = f"api_{unique_id}_{file.filename}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
-        file.save(filepath)
 
         # 3. Extract text
         password = request.form.get('password', '').strip() or None

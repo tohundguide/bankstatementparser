@@ -181,17 +181,27 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
         <table>
             <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
             <tbody>
-                <tr><td>file</td><td>File</td><td>Yes</td><td>Bank statement (PDF, DOCX, TXT, CSV). Max 50MB.</td></tr>
+                <tr><td>file</td><td>File</td><td>No*</td><td>Bank statement (PDF, DOCX, TXT, CSV). Max 50MB.</td></tr>
+                <tr><td>url</td><td>String</td><td>No*</td><td>URL to download the file from. Supports <strong>Google Drive</strong>, Dropbox, OneDrive, and direct links. File must be publicly shared.</td></tr>
                 <tr><td>bank</td><td>String</td><td>No</td><td>Bank code (e.g. <code>jkbank</code>, <code>hdfc</code>). Default: <code>auto</code> (auto-detect).</td></tr>
                 <tr><td>password</td><td>String</td><td>No</td><td>PDF password, if the file is password-protected.</td></tr>
                 <tr><td>format</td><td>String</td><td>No</td><td><code>json</code> (default) — full transaction data. <code>excel</code> — includes download URL for .xlsx file.</td></tr>
             </tbody>
         </table>
+        <div class="alert">
+            <strong>* Either <code>file</code> or <code>url</code> must be provided.</strong> If both are given, <code>url</code> takes priority.
+        </div>
 
-        <h3>Example Request</h3>
+        <h3>Example: File Upload</h3>
         <pre><code>curl -X POST {{ base_url }}/api/v1/parse \
   -H <span class="string">"X-API-Key: your-api-key"</span> \
   -F <span class="string">"file=@hdfc_april_2025.pdf"</span> \
+  -F <span class="string">"bank=auto"</span></code></pre>
+
+        <h3>Example: Google Drive URL</h3>
+        <pre><code>curl -X POST {{ base_url }}/api/v1/parse \
+  -H <span class="string">"X-API-Key: your-api-key"</span> \
+  -F <span class="string">"url=https://drive.google.com/file/d/FILE_ID/view?usp=sharing"</span> \
   -F <span class="string">"bank=auto"</span></code></pre>
 
         <h3>Success Response (200)</h3>
@@ -282,7 +292,8 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
                 <tr><td class="error-code">MISSING_KEY</td><td>401</td><td>No API key provided in request.</td></tr>
                 <tr><td class="error-code">INVALID_KEY</td><td>403</td><td>The API key is not recognized.</td></tr>
                 <tr><td class="error-code">RATE_LIMITED</td><td>429</td><td>Too many requests. Check <code>Retry-After</code> header.</td></tr>
-                <tr><td class="error-code">NO_FILE</td><td>400</td><td>No file was uploaded.</td></tr>
+                <tr><td class="error-code">NO_FILE</td><td>400</td><td>No file uploaded and no URL provided.</td></tr>
+                <tr><td class="error-code">URL_DOWNLOAD_FAILED</td><td>400</td><td>Could not download the file from the given URL.</td></tr>
                 <tr><td class="error-code">UNSUPPORTED_FORMAT</td><td>400</td><td>File type not supported.</td></tr>
                 <tr><td class="error-code">PASSWORD_REQUIRED</td><td>400</td><td>PDF is password-protected. Provide the <code>password</code> field.</td></tr>
                 <tr><td class="error-code">EXTRACTION_FAILED</td><td>400</td><td>Could not extract text from the file.</td></tr>
