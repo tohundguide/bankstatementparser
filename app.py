@@ -292,6 +292,375 @@ def parse_statement():
             pass
 
 
+# ── Google Drive URL helpers ──
+
+def _extract_gdrive_file_id(url: str) -> str:
+    """
+    Extract the Google Drive file ID from various URL formats:
+      - https://drive.google.com/file/d/{ID}/view?usp=sharing
+      - https://drive.google.com/open?id={ID}
+      - https://drive.google.com/uc?id={ID}&export=download
+      - https://docs.google.com/document/d/{ID}/...
+      - https://docs.google.com/spreadsheets/d/{ID}/...
+    Returns the file ID or None.
+    """
+    if not url:
+        return None
+
+    # Format: /file/d/{ID}/ or /document/d/{ID}/ or /spreadsheets/d/{ID}/
+    match = re.search(r'/d/([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+
+    # Format: ?id={ID} or &id={ID}
+    match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def _download_from_gdrive(file_id: str, dest_path: str) -> dict:
+    """
+    Download a file from Google Drive by file ID.
+    Handles the large-file virus-scan confirmation page.
+
+    Returns:
+        dict with 'success', 'filename' (from Content-Disposition), and 'error'.
+    """
+    import requests
+
+    base_url = "https://drive.google.com/uc?export=download"
+    session = requests.Session()
+
+    # First request — may get a confirmation page for large files
+    response = session.get(base_url, params={'id': file_id}, stream=True, timeout=60)
+
+    # Check for the virus-scan confirmation token
+    confirm_token = None
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            confirm_token = value
+            break
+
+    if confirm_token:
+        response = session.get(
+            base_url,
+            params={'id': file_id, 'confirm': confirm_token},
+            stream=True,
+            timeout=60,
+        )
+
+    # Check if we got an actual file (not an HTML error page)
+    content_type = response.headers.get('Content-Type', '')
+    if 'text/html' in content_type and response.status_code == 200:
+        # Could be a "you need access" page or Google's error page
+        snippet = response.text[:500].lower()
+        if 'sign in' in snippet or 'request access' in snippet:
+            return {'success': False, 'error': 'File is not publicly shared. Please set sharing to "Anyone with the link".'}
+        if 'quota' in snippet:
+            return {'success': False, 'error': 'Google Drive download quota exceeded. Try again later.'}
+        # Generic HTML response — likely not a real file
+        return {'success': False, 'error': 'Could not download file. Ensure the link is a direct file (not a folder) and is publicly shared.'}
+
+    if response.status_code != 200:
+        return {'success': False, 'error': f'Google Drive returned HTTP {response.status_code}'}
+
+    # Try to get the original filename from Content-Disposition
+    original_filename = None
+    cd = response.headers.get('Content-Disposition', '')
+    if cd:
+        # Try filename*= (RFC 5987)
+        match = re.search(r"filename\*=(?:UTF-8''|utf-8'')(.+?)(?:;|$)", cd)
+        if match:
+            from urllib.parse import unquote
+            original_filename = unquote(match.group(1).strip())
+        else:
+            # Try filename=
+            match = re.search(r'filename="?([^";\n]+)"?', cd)
+            if match:
+                original_filename = match.group(1).strip()
+
+    # Write the file
+    with open(dest_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=32768):
+            if chunk:
+                f.write(chunk)
+
+    return {'success': True, 'filename': original_filename}
+
+
+def _download_from_direct_url(url: str, dest_path: str) -> dict:
+    """
+    Download a file from a direct (non-Google-Drive) URL.
+    """
+    import requests
+
+    try:
+        response = requests.get(url, stream=True, timeout=60, allow_redirects=True)
+        if response.status_code != 200:
+            return {'success': False, 'error': f'HTTP {response.status_code} when downloading file'}
+
+        # Get filename from Content-Disposition or URL
+        original_filename = None
+        cd = response.headers.get('Content-Disposition', '')
+        if cd:
+            match = re.search(r'filename="?([^";\n]+)"?', cd)
+            if match:
+                original_filename = match.group(1).strip()
+
+        if not original_filename:
+            from urllib.parse import urlparse
+            original_filename = os.path.basename(urlparse(url).path) or None
+
+        with open(dest_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=32768):
+                if chunk:
+                    f.write(chunk)
+
+        return {'success': True, 'filename': original_filename}
+
+    except requests.exceptions.Timeout:
+        return {'success': False, 'error': 'Download timed out (60s). File may be too large or server unreachable.'}
+    except requests.exceptions.RequestException as e:
+        return {'success': False, 'error': f'Download failed: {str(e)}'}
+
+
+@app.route('/parse-url', methods=['POST'])
+def parse_from_url():
+    """
+    Parse a bank statement from a Google Drive URL (or any direct file URL).
+
+    Accepts JSON body:
+      {
+        "url": "https://drive.google.com/file/d/.../view?usp=sharing",
+        "password": "optional-pdf-password",
+        "bank": "auto"   // or a specific bank code like "jk_bank"
+      }
+
+    Returns JSON with parsed transactions, account info, balance verification, etc.
+    """
+    filepath = None
+    try:
+        # 1. Parse request
+        data = request.get_json(silent=True)
+        if not data:
+            # Also accept form data
+            data = {
+                'url': request.form.get('url', ''),
+                'password': request.form.get('password', ''),
+                'bank': request.form.get('bank', 'auto'),
+            }
+
+        url = (data.get('url') or '').strip()
+        if not url:
+            return jsonify({'error': 'Missing "url" parameter. Provide a Google Drive or direct file URL.'}), 400
+
+        password = (data.get('password') or '').strip() or None
+        bank_code = (data.get('bank') or 'auto').strip()
+
+        # 2. Download the file
+        unique_id = str(uuid.uuid4())[:8]
+        temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f'url_{unique_id}_download')
+
+        gdrive_id = _extract_gdrive_file_id(url)
+        if gdrive_id:
+            dl_result = _download_from_gdrive(gdrive_id, temp_path)
+        else:
+            dl_result = _download_from_direct_url(url, temp_path)
+
+        if not dl_result['success']:
+            return jsonify({'error': dl_result['error']}), 400
+
+        # Determine file extension from original filename
+        original_filename = dl_result.get('filename') or ''
+        _, ext = os.path.splitext(original_filename)
+        ext = ext.lower()
+
+        # If no extension from filename, try to guess from content
+        if ext not in ['.pdf', '.docx', '.doc', '.txt', '.csv']:
+            # Sniff the file header
+            with open(temp_path, 'rb') as f:
+                header = f.read(8)
+            if header[:4] == b'%PDF':
+                ext = '.pdf'
+            elif header[:4] == b'PK\x03\x04':
+                ext = '.docx'
+            else:
+                ext = '.txt'
+
+        # Rename with correct extension
+        filepath = temp_path + ext
+        os.rename(temp_path, filepath)
+
+        # Validate file size
+        file_size = os.path.getsize(filepath)
+        if file_size < 10:
+            return jsonify({'error': 'Downloaded file is empty or too small.'}), 400
+        if file_size > 50 * 1024 * 1024:
+            return jsonify({'error': 'File exceeds 50MB limit.'}), 400
+
+        # 3. Extract raw text
+        try:
+            raw_text = extract_text(filepath, ext, password=password)
+        except ValueError as e:
+            error_msg = str(e)
+            if 'password' in error_msg.lower():
+                return jsonify({'error': error_msg, 'needs_password': True}), 400
+            elif 'OCR' in error_msg or 'scanned' in error_msg.lower():
+                return jsonify({'error': error_msg, 'needs_ocr': True}), 400
+            raise
+
+        if not raw_text or len(raw_text.strip()) < 50:
+            return jsonify({'error': 'Could not extract meaningful text from the downloaded file.'}), 400
+
+        # 4. Detect bank
+        used_llm = False
+        if bank_code == 'auto':
+            bank_code = detect_bank(raw_text)
+
+        # 5. Parse the statement
+        result = None
+        if bank_code:
+            parser = get_parser(bank_code)
+            if parser:
+                result = parser.parse(raw_text)
+                if not result or not result.get('transactions'):
+                    result = None
+
+        # 5b. LLM fallback
+        if not result and llm_parser.is_available():
+            result = llm_parser.parse_with_llm(raw_text)
+            if result and result.get('transactions'):
+                used_llm = True
+            else:
+                result = None
+
+        # 5c. Parsing failed
+        if not result:
+            return jsonify({
+                'error': 'Could not parse this bank statement.',
+                'raw_preview': raw_text[:300],
+                'source_url': url,
+            }), 400
+
+        # 6. Build full JSON response with balance verification
+        from exporters.excel_exporter import _parse_balance_value
+        transactions = result['transactions']
+
+        # Balance verification for ALL transactions
+        prev_bal = None
+        verified_transactions = []
+        v_match = 0
+        v_total = 0
+
+        for idx, t in enumerate(transactions):
+            bal = _parse_balance_value(t['balance'])
+            if idx == 0:
+                check = 'opening'
+            elif prev_bal is not None and bal is not None:
+                try:
+                    w = float(str(t['withdrawal']).replace(',', '')) if t['withdrawal'] else 0
+                    d = float(str(t['deposit']).replace(',', '')) if t['deposit'] else 0
+                except (ValueError, TypeError):
+                    w, d = 0, 0
+                exp = prev_bal + d - w
+                diff = bal - exp
+                v_total += 1
+                if abs(diff) < 0.02:
+                    check = 'match'
+                    v_match += 1
+                else:
+                    check = f'mismatch:{diff:+.2f}'
+            else:
+                check = 'na'
+            prev_bal = bal
+
+            verified_transactions.append({
+                'index': idx + 1,
+                'date': t['date'],
+                'particulars': t['particulars'],
+                'chq_ref': t['chq_ref'],
+                'withdrawal': t['withdrawal'],
+                'deposit': t['deposit'],
+                'balance': t['balance'],
+                'balance_check': check,
+            })
+
+        v_pct = (v_match / v_total * 100) if v_total > 0 else 0
+
+        # Monthly summary
+        monthly = {}
+        for t in transactions:
+            try:
+                # Parse date — try common formats
+                dt = None
+                for fmt in ('%d/%m/%Y', '%d-%m-%Y', '%Y-%m-%d', '%d/%m/%y', '%d-%m-%y', '%d %b %Y', '%d-%b-%Y'):
+                    try:
+                        dt = datetime.strptime(t['date'].strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
+                if not dt:
+                    continue
+                month_key = dt.strftime('%Y-%m')
+                if month_key not in monthly:
+                    monthly[month_key] = {'month': month_key, 'withdrawals': 0, 'deposits': 0, 'count': 0}
+                try:
+                    w = float(str(t['withdrawal']).replace(',', '')) if t['withdrawal'] else 0
+                    d = float(str(t['deposit']).replace(',', '')) if t['deposit'] else 0
+                except (ValueError, TypeError):
+                    w, d = 0, 0
+                monthly[month_key]['withdrawals'] += w
+                monthly[month_key]['deposits'] += d
+                monthly[month_key]['count'] += 1
+            except Exception:
+                continue
+
+        monthly_summary = sorted(monthly.values(), key=lambda x: x['month'])
+        for m in monthly_summary:
+            m['withdrawals'] = round(m['withdrawals'], 2)
+            m['deposits'] = round(m['deposits'], 2)
+            m['net'] = round(m['deposits'] - m['withdrawals'], 2)
+
+        # 7. Return full JSON
+        return jsonify({
+            'success': True,
+            'source_url': url,
+            'parsed_by': 'ai' if used_llm else 'structured',
+            'bank_name': result['bank_name'],
+            'account_info': result.get('account_info', {}),
+            'period': result.get('period', 'N/A'),
+            'total_transactions': len(transactions),
+            'verification': {
+                'matched': v_match,
+                'total_checked': v_total,
+                'match_percent': round(v_pct, 1),
+            },
+            'monthly_summary': monthly_summary,
+            'transactions': verified_transactions,
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': f'Processing error: {str(e)}'}), 500
+
+    finally:
+        # Cleanup downloaded file
+        try:
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+        except:
+            pass
+        # Also remove the temp file without extension (in case rename failed)
+        try:
+            base = filepath.rsplit('.', 1)[0] if filepath else None
+            if base and os.path.exists(base):
+                os.remove(base)
+        except:
+            pass
+
+
 @app.route('/feedback', methods=['POST'])
 def submit_feedback():
     """
