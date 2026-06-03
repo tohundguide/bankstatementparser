@@ -1016,8 +1016,34 @@ def _download_from_url(url: str, upload_folder: str) -> tuple[str, str]:
     original_url = url
     filename = None
     
+    # ── Google Docs/Sheets/Slides URL handling ──
+    # These need export URLs (they're not raw files, they're Google's native format)
+    if 'docs.google.com' in url:
+        # Extract file ID from docs.google.com/spreadsheets/d/ID/edit or similar
+        import re as _re
+        doc_match = _re.search(r'docs\.google\.com/(?:spreadsheets|document|presentation)/d/([a-zA-Z0-9_-]+)', url)
+        if doc_match:
+            file_id = doc_match.group(1)
+            doc_type = 'spreadsheets' if 'spreadsheets' in url else ('document' if 'document' in url else 'presentation')
+            
+            if doc_type == 'spreadsheets':
+                # Export Google Sheet as XLSX (the parser can handle xlsx via openpyxl)
+                # But actually we need CSV for text extraction
+                url = f'https://docs.google.com/spreadsheets/d/{file_id}/export?format=csv'
+                filename = 'google_sheet_export.csv'
+            elif doc_type == 'document':
+                url = f'https://docs.google.com/document/d/{file_id}/export?format=pdf'
+                filename = 'google_doc_export.pdf'
+            else:
+                url = f'https://docs.google.com/presentation/d/{file_id}/export/pdf'
+                filename = 'google_slides_export.pdf'
+            
+            print(f"  [API] Google Docs export URL: {url}")
+        else:
+            raise ValueError('Could not extract file ID from Google Docs URL.')
+    
     # ── Google Drive URL handling ──
-    if 'drive.google.com' in url:
+    elif 'drive.google.com' in url:
         # Extract file ID from various Google Drive URL formats
         file_id = None
         
