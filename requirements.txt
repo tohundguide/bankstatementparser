@@ -15,5 +15,8 @@ pytesseract>=0.3
 pdf2image>=1.16
 Pillow>=10.0
 
+# HTTP Downloads (Google Drive URL parsing)
+requests>=2.31
+
 # Production Server
 gunicorn>=21.0
