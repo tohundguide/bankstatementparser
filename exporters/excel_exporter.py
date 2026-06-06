@@ -245,10 +245,8 @@ def _create_transaction_sheet(wb: Workbook, result: Dict):
     # ── Transaction Data ──
     transactions = result.get('transactions', [])
     
-    # Balance verification tracking
-    prev_parsed_balance = None
-    match_count = 0
-    check_count = 0
+    # Track data range for formula references
+    data_start_row = row
     
     for idx, txn in enumerate(transactions):
         # Date
@@ -283,40 +281,35 @@ def _create_transaction_sheet(wb: Workbook, result: Dict):
                 ws.cell(row=row, column=5, value=deposit_val).font = data_font
         ws.cell(row=row, column=5).alignment = right_align
         
-        # Balance
+        # Balance (column 6) — write as numeric value for formula compatibility
         balance_val = txn['balance']
-        ws.cell(row=row, column=6, value=balance_val).font = data_font
+        parsed_bal = _parse_balance_value(balance_val)
+        if parsed_bal is not None:
+            bal_cell = ws.cell(row=row, column=6, value=parsed_bal)
+            bal_cell.number_format = '#,##0.00'
+            bal_cell.font = data_font
+        else:
+            ws.cell(row=row, column=6, value=balance_val).font = data_font
         ws.cell(row=row, column=6).alignment = right_align
         
-        # Verification (column 7)
-        parsed_bal = _parse_balance_value(balance_val)
+        # Verification (column 7) — live Excel formula
         if idx == 0:
-            check_text = "○ Opening"
-            check_color = '7F8C8D'
-        elif prev_parsed_balance is not None and parsed_bal is not None:
-            try:
-                w_val = float(str(withdrawal_val).replace(',', '')) if withdrawal_val else 0
-                d_val = float(str(deposit_val).replace(',', '')) if deposit_val else 0
-            except (ValueError, TypeError):
-                w_val, d_val = 0, 0
-            expected = prev_parsed_balance + d_val - w_val
-            diff = parsed_bal - expected
-            check_count += 1
-            if abs(diff) < 0.02:
-                check_text = "✓ Match"
-                check_color = '27AE60'
-                match_count += 1
-            else:
-                check_text = f"✗ Diff: {diff:+,.2f}"
-                check_color = 'C0392B'
+            # First row: Opening balance — no formula needed
+            check_cell = ws.cell(row=row, column=7, value="○ Opening")
+            check_cell.font = Font(name='Calibri', size=9, color='7F8C8D')
         else:
-            check_text = "? N/A"
-            check_color = '7F8C8D'
-        
-        check_cell = ws.cell(row=row, column=7, value=check_text)
-        check_cell.font = Font(name='Calibri', size=9, color=check_color, bold=check_text.startswith('✗'))
+            # Formula: expected = prev_balance + deposit - withdrawal
+            # If ABS(actual - expected) < 0.02 → "✓ Match", else "✗ Diff: X"
+            prev_row = row - 1
+            verify_formula = (
+                f'=IF(OR(F{row}="",F{prev_row}=""),"? N/A",'
+                f'IF(ABS(F{row}-(F{prev_row}+IF(E{row}="",0,E{row})-IF(D{row}="",0,D{row})))<0.02,'
+                f'"✓ Match",'
+                f'"✗ Diff: "&TEXT(F{row}-(F{prev_row}+IF(E{row}="",0,E{row})-IF(D{row}="",0,D{row})),"+#,##0.00;-#,##0.00")))'
+            )
+            check_cell = ws.cell(row=row, column=7, value=verify_formula)
+            check_cell.font = Font(name='Calibri', size=9, color='2C3E50')
         check_cell.alignment = center_align
-        prev_parsed_balance = parsed_bal
         
         # Narration (column 8) — VLOOKUP from Narration Mapping sheet
         vlookup = f"=IFERROR(VLOOKUP(B{row},'Narration Mapping'!A:B,2,FALSE),\"\")"
@@ -339,62 +332,62 @@ def _create_transaction_sheet(wb: Workbook, result: Dict):
         
         row += 1
     
-    # ── Totals Row ──
+    data_end_row = row - 1  # Last row with transaction data
+    
+    # ── Totals Row (with SUM formulas) ──
     row += 1
+    totals_row = row
     ws.merge_cells(f'A{row}:C{row}')
     summary_cell = ws.cell(row=row, column=1, value='TOTALS')
     summary_cell.font = Font(name='Calibri', bold=True, size=11)
     summary_cell.alignment = center_align
     summary_cell.fill = totals_fill
     
-    total_withdrawals = 0
-    total_deposits = 0
-    for txn in transactions:
-        try:
-            if txn['withdrawal']:
-                total_withdrawals += float(str(txn['withdrawal']).replace(',', ''))
-        except (ValueError, TypeError):
-            pass
-        try:
-            if txn['deposit']:
-                total_deposits += float(str(txn['deposit']).replace(',', ''))
-        except (ValueError, TypeError):
-            pass
-    
-    wd_cell = ws.cell(row=row, column=4, value=total_withdrawals)
+    # Withdrawal total — SUM formula
+    wd_cell = ws.cell(row=row, column=4, value=f'=SUM(D{data_start_row}:D{data_end_row})')
     wd_cell.font = Font(name='Calibri', bold=True, size=11, color='C0392B')
     wd_cell.number_format = '#,##0.00'
     wd_cell.alignment = right_align
     wd_cell.border = thin_border
     
-    dp_cell = ws.cell(row=row, column=5, value=total_deposits)
+    # Deposit total — SUM formula
+    dp_cell = ws.cell(row=row, column=5, value=f'=SUM(E{data_start_row}:E{data_end_row})')
     dp_cell.font = Font(name='Calibri', bold=True, size=11, color='27AE60')
     dp_cell.number_format = '#,##0.00'
     dp_cell.alignment = right_align
     dp_cell.border = thin_border
     
-    # Verification summary in column 7
-    verify_pct = (match_count / check_count * 100) if check_count > 0 else 0
-    verify_text = f"Verified: {match_count}/{check_count} ({verify_pct:.0f}%)"
-    verify_cell = ws.cell(row=row, column=7, value=verify_text)
-    verify_cell.font = Font(name='Calibri', bold=True, size=9, color='27AE60' if verify_pct == 100 else 'E67E22')
+    # Verification summary — COUNTIF formula
+    # Count how many verification cells show "✓ Match" out of total non-opening rows
+    verify_range = f'G{data_start_row}:G{data_end_row}'
+    verify_formula = (
+        f'="Verified: "'
+        f'&COUNTIF({verify_range},"✓*")'
+        f'&"/"'
+        f'&(COUNTIF({verify_range},"✓*")+COUNTIF({verify_range},"✗*"))'
+        f'&" ("'
+        f'&IF((COUNTIF({verify_range},"✓*")+COUNTIF({verify_range},"✗*"))>0,'
+        f'TEXT(COUNTIF({verify_range},"✓*")/(COUNTIF({verify_range},"✓*")+COUNTIF({verify_range},"✗*"))*100,"0"),"0")'
+        f'&"%)"'
+    )
+    verify_cell = ws.cell(row=row, column=7, value=verify_formula)
+    verify_cell.font = Font(name='Calibri', bold=True, size=9, color='2C3E50')
     verify_cell.alignment = center_align
     
     for col_idx in range(1, 9):
         ws.cell(row=row, column=col_idx).border = thin_border
         ws.cell(row=row, column=col_idx).fill = totals_fill
     
-    # ── Net Flow ──
+    # ── Net Flow (formula referencing totals) ──
     row += 1
     ws.merge_cells(f'A{row}:C{row}')
     net_label = ws.cell(row=row, column=1, value='NET FLOW (Deposits - Withdrawals)')
     net_label.font = Font(name='Calibri', bold=True, size=10, color='555555')
     net_label.alignment = center_align
     
-    net = total_deposits - total_withdrawals
     ws.merge_cells(f'D{row}:E{row}')
-    net_cell = ws.cell(row=row, column=4, value=net)
-    net_cell.font = Font(name='Calibri', bold=True, size=12, color='27AE60' if net >= 0 else 'C0392B')
+    net_cell = ws.cell(row=row, column=4, value=f'=E{totals_row}-D{totals_row}')
+    net_cell.font = Font(name='Calibri', bold=True, size=12, color='2C3E50')
     net_cell.number_format = '#,##0.00'
     net_cell.alignment = right_align
     
