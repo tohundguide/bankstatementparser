@@ -35,6 +35,16 @@ class PNBParser(BaseBankParser):
         "Cash Deposit At",
         "Electronically Generated Statement",
     ]
+    DETECTION_RULES = [
+        (r"\bPUNB0\w{6}\b", 10, True),
+        ("pnbindia.in", 10, False),
+        ("Punjab National Bank", 3, False),
+        ("Electronically Generated Statement", 3, False),
+        ("Cash Withdrawal At Br", 1, False),
+        ("Cash Deposit At", 1, False),
+        ("CHQ. NO.", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse PNB statement text into structured data."""

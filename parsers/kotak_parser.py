@@ -32,6 +32,16 @@ class KotakParser(BaseBankParser):
         "Sl. No.",
         "1860 266 2666",
     ]
+    DETECTION_RULES = [
+        (r"\bKKBK0\w{6}\b", 10, True),
+        ("kotak.com", 10, False),
+        ("Kotak Mahindra", 3, False),
+        ("Cust. Reln. No.", 3, False),
+        ("1860 266 2666", 3, False),
+        ("Dr / Cr", 1, False),
+        ("Sl. No.", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Kotak Bank statement text into structured data."""

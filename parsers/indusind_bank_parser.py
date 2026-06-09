@@ -34,6 +34,18 @@ class IndusIndBankParser(BaseBankParser):
         "Deposit Amt",
         "Closing Balance",
     ]
+    DETECTION_RULES = [
+        (r"\bINDB0\w{6}\b", 10, True),
+        ("indusind.com", 10, False),
+        ("IndusInd Bank", 3, False),
+        ("Withdrawal Amt", 1, False),
+        ("Deposit Amt", 1, False),
+        ("Closing Balance", 1, False),
+    ]
+    NEGATIVE_RULES = [
+        (r"\bHDFC0\w{6}\b", -8, True),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse IndusInd Bank statement text into structured data."""

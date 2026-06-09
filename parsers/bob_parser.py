@@ -34,6 +34,18 @@ class BankOfBarodaParser(BaseBankParser):
         "bob",
         "bankofbaroda",
     ]
+    DETECTION_RULES = [
+        (r"\bBARB0\w{6}\b", 10, True),
+        ("bankofbaroda.in", 10, False),
+        ("BANK OF BARODA", 3, False),
+        ("Baroda Connect", 3, False),
+        ("Statement of Account", 1, False),
+    ]
+    NEGATIVE_RULES = [
+        (r"\bSBIN0\w{6}\b", -8, True),
+        (r"\bUBIN0\w{6}\b", -8, True),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Bank of Baroda statement text into structured data."""

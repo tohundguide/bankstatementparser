@@ -38,6 +38,15 @@ class AxisBankParser(BaseBankParser):
         "axis bank",
         "axisbank",
     ]
+    DETECTION_RULES = [
+        (r"\bUTIB0\w{6}\b", 10, True),
+        ("axisbank.com", 10, False),
+        ("AXIS BANK", 3, False),
+        ("Axis eDGE", 3, False),
+        ("Detailed Statement for a/c", 3, False),
+        ("Txn Date", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Axis Bank statement text into structured data."""
@@ -48,6 +57,7 @@ class AxisBankParser(BaseBankParser):
         transactions = []
         current_txn = None
         opening_balance = None
+        self._closing_balance = None
         in_transactions = False
 
         # Skip patterns — header/footer/metadata lines
@@ -183,6 +193,7 @@ class AxisBankParser(BaseBankParser):
             # Check for closing balance (marks end of transactions)
             cm = closing_re.search(stripped)
             if cm:
+                self._closing_balance = cm.group(1).replace(',', '')
                 if current_txn:
                     transactions.append(current_txn)
                     current_txn = None
@@ -261,6 +272,26 @@ class AxisBankParser(BaseBankParser):
         # and determine W vs D from the narration or pattern
         self._classify_amounts(transactions, opening_balance)
 
+        # Compute running balance from opening balance
+        if opening_balance:
+            try:
+                running = float(opening_balance)
+            except (ValueError, TypeError):
+                running = None
+
+            if running is not None:
+                for txn in transactions:
+                    if txn['particulars'] == 'Opening Balance':
+                        # Already has balance set
+                        continue
+                    try:
+                        w = float(txn['withdrawal'].replace(',', '')) if txn['withdrawal'] else 0
+                        d = float(txn['deposit'].replace(',', '')) if txn['deposit'] else 0
+                    except (ValueError, TypeError):
+                        w, d = 0, 0
+                    running = running + d - w
+                    txn['balance'] = f'{running:.2f}'
+
         # Clean up
         for txn in transactions:
             txn.pop('_amount', None)
@@ -279,19 +310,19 @@ class AxisBankParser(BaseBankParser):
         Classify each transaction's amount as withdrawal or deposit.
 
         Axis Bank statements show only one amount per transaction — it's either
-        in the Withdrawals column or the Deposits column. We use narration
-        patterns to classify:
-          - UPI/P2A (person-to-account inward) = Deposit
-          - UPI/P2M (person-to-merchant) = Withdrawal
-          - CreditCard Payment = Withdrawal
-          - Narrations with 'Ref#' (credit card) = Withdrawal
-          - NEFT/RTGS/IMPS inward = Deposit
-          - Cash Deposit = Deposit
-          - ATM/Cash Withdrawal = Withdrawal
+        in the Withdrawals column or the Deposits column.
+
+        Strategy:
+          1. First pass: classify using confident narration patterns
+             - UPI/P2M = always withdrawal
+             - CreditCard Payment = always withdrawal
+             - UPI/P2A = AMBIGUOUS (can be inward or outward), default withdrawal
+             - NEFT/RTGS/IMPS with CR = deposit
+             - Cash Deposit = deposit
+          2. Second pass: use closing balance to fix misclassified P2A transactions
         """
-        # Deposit indicators in narration
+        # Strong deposit indicators (NOT including P2A — it's ambiguous)
         deposit_patterns = [
-            r'UPI/P2A/',       # P2A inward transfers
             r'NEFT.*CR',
             r'RTGS.*CR',
             r'IMPS.*CR',
@@ -303,9 +334,9 @@ class AxisBankParser(BaseBankParser):
             r'SWEEP TRF',
         ]
 
-        # Withdrawal indicators
+        # Strong withdrawal indicators
         withdrawal_patterns = [
-            r'UPI/P2M/',       # P2M merchant payments
+            r'UPI/P2M/',       # P2M merchant payments — always outward
             r'CreditCard\s+Payment',
             r'Credit\s*Card\s+Payment',
             r'NEFT.*DR',
@@ -323,7 +354,10 @@ class AxisBankParser(BaseBankParser):
             r'GST',
         ]
 
-        for txn in transactions:
+        # First pass: classify with confident patterns; P2A defaults to withdrawal
+        ambiguous_indices = []
+
+        for idx, txn in enumerate(transactions):
             amount = txn.get('_amount', '')
             if not amount:
                 continue
@@ -334,14 +368,14 @@ class AxisBankParser(BaseBankParser):
 
             narration = txn['particulars']
 
-            # Check deposit patterns first
+            # Check strong deposit patterns
             is_deposit = False
             for pat in deposit_patterns:
                 if re.search(pat, narration, re.IGNORECASE):
                     is_deposit = True
                     break
 
-            # Check withdrawal patterns
+            # Check strong withdrawal patterns
             is_withdrawal = False
             if not is_deposit:
                 for pat in withdrawal_patterns:
@@ -354,8 +388,70 @@ class AxisBankParser(BaseBankParser):
             elif is_withdrawal:
                 txn['withdrawal'] = amount
             else:
-                # Default: assume withdrawal (most common in personal statements)
+                # Ambiguous (likely UPI/P2A) — default to withdrawal, mark for review
                 txn['withdrawal'] = amount
+                if re.search(r'UPI/P2A/', narration, re.IGNORECASE):
+                    ambiguous_indices.append(idx)
+
+        # Second pass: use closing balance to fix ambiguous P2A classifications
+        if ambiguous_indices and opening_balance and self._closing_balance:
+            try:
+                target_closing = float(self._closing_balance)
+                opening = float(opening_balance)
+            except (ValueError, TypeError):
+                return
+
+            # Compute current net flow
+            current_net = self._compute_net(transactions)
+            expected_net = target_closing - opening
+            discrepancy = expected_net - current_net
+
+            # Each wrongly-classified-as-withdrawal P2A that should be deposit
+            # would fix by 2*amount (removing from W and adding to D)
+            # Greedily flip the P2A that best fixes the discrepancy
+            for _ in range(len(ambiguous_indices)):
+                if abs(discrepancy) < 0.01:
+                    break
+
+                best_idx = None
+                best_remaining = float('inf')
+
+                for idx in ambiguous_indices:
+                    txn = transactions[idx]
+                    if not txn['withdrawal']:
+                        continue  # Already flipped
+                    try:
+                        amt = float(txn['withdrawal'].replace(',', ''))
+                    except (ValueError, TypeError):
+                        continue
+                    # Flipping W→D changes net by +2*amt
+                    new_discrepancy = discrepancy - 2 * amt
+                    if abs(new_discrepancy) < abs(best_remaining):
+                        best_remaining = new_discrepancy
+                        best_idx = idx
+
+                if best_idx is not None and abs(best_remaining) < abs(discrepancy):
+                    txn = transactions[best_idx]
+                    txn['deposit'] = txn['withdrawal']
+                    txn['withdrawal'] = ''
+                    discrepancy = best_remaining
+                    ambiguous_indices.remove(best_idx)
+                else:
+                    break  # No flip improves things
+
+    def _compute_net(self, transactions: List[Dict]) -> float:
+        """Compute total deposits - total withdrawals."""
+        net = 0.0
+        for txn in transactions:
+            if txn['particulars'] == 'Opening Balance':
+                continue
+            try:
+                w = float(txn['withdrawal'].replace(',', '')) if txn['withdrawal'] else 0
+                d = float(txn['deposit'].replace(',', '')) if txn['deposit'] else 0
+            except (ValueError, TypeError):
+                continue
+            net += d - w
+        return net
 
     def _extract_account_info(self, raw_text: str) -> Dict:
         """Extract account information from header."""

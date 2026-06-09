@@ -30,6 +30,14 @@ class EquitasParser(BaseBankParser):
         "equitasbank.com",
         "Business Prime Current",
     ]
+    DETECTION_RULES = [
+        (r"\bESFB0\w{6}\b", 10, True),
+        ("equitasbank.com", 10, False),
+        ("Equitas Small Finance Bank", 3, False),
+        ("Business Prime Current", 3, False),
+        ("Equitas", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Equitas SFB statement text into structured data."""

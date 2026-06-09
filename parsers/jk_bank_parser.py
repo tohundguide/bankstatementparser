@@ -48,6 +48,14 @@ class JKBankParser(BaseBankParser):
         "cKYC Id",
         "STATEMENT OF ACCOUNT FOR THE PERIOD",
     ]
+    DETECTION_RULES = [
+        (r"\bJAKA0\w{6}\b", 10, True),
+        ("jkbank.com", 10, False),
+        ("JAMMU AND KASHMIR BANK", 3, False),
+        ("cKYC Id", 3, False),
+        ("STATEMENT OF ACCOUNT FOR THE PERIOD", 1, False),
+    ]
+
     
     # Date pattern: "  DD-MM-YYYY  " at start of line
     DATE_RE = re.compile(r'^\s{0,4}(\d{2}-\d{2}-\d{4})\s')

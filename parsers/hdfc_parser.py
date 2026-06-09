@@ -34,6 +34,20 @@ class HDFCBankParser(BaseBankParser):
         "ClosingBalance",
         "PageNo.:",
     ]
+    DETECTION_RULES = [
+        (r"\bHDFC0\w{6}\b", 10, True),
+        ("HDFCBANKLIMITED", 10, False),
+        ("hdfcbank.com", 10, False),
+        ("Statementof account", 3, False),
+        ("PageNo.:", 1, False),
+        ("WithdrawalAmt", 1, False),
+        ("DepositAmt", 1, False),
+        ("ClosingBalance", 1, False),
+    ]
+    NEGATIVE_RULES = [
+        (r"\bINDB0\w{6}\b", -8, True),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse HDFC Bank statement text into structured data."""

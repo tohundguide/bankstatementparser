@@ -53,6 +53,9 @@ def detect_bank(raw_text: str) -> Optional[str]:
     """
     Auto-detect which bank the statement belongs to.
     
+    Uses weighted scoring: ANCHOR (IFSC, domain) > STRONG (bank name) > WEAK (generic).
+    Picks the parser with the highest (score, anchor_hits) tuple.
+    
     Args:
         raw_text: Raw text extracted from the statement file
     
@@ -63,16 +66,24 @@ def detect_bank(raw_text: str) -> Optional[str]:
         _discover_parsers()
     
     best_match = None
-    best_score = 0
+    best_key = (-1, -1)  # (score, anchor_hits)
     
     for code, parser_class in _PARSER_REGISTRY.items():
-        if parser_class.can_parse(raw_text):
-            # Count keyword matches for scoring
+        if not parser_class.can_parse(raw_text):
+            continue
+        
+        # Use weighted scoring if available, else fall back to keyword count
+        if parser_class.DETECTION_RULES:
+            score, anchors = parser_class.detection_score(raw_text)
+            key = (score, anchors)
+        else:
             text_upper = raw_text.upper()
             score = sum(1 for kw in parser_class.DETECTION_KEYWORDS if kw.upper() in text_upper)
-            if score > best_score:
-                best_score = score
-                best_match = code
+            key = (score, 0)
+        
+        if key > best_key:
+            best_key = key
+            best_match = code
     
     return best_match
 

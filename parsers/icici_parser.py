@@ -40,6 +40,16 @@ class ICICIBankParser(BaseBankParser):
         "ICICI BANK",
         "End Of Statement",
     ]
+    DETECTION_RULES = [
+        (r"\bICIC0\w{6}\b", 10, True),
+        ("icicibank.com", 10, False),
+        ("ICICI BANK", 3, False),
+        ("Transaction Remarks", 3, False),
+        ("Cust ID:", 1, False),
+        ("Withdrawl", 1, False),
+        ("End Of Statement", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse ICICI Bank statement text into structured data."""

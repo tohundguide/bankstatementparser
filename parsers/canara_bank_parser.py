@@ -34,6 +34,14 @@ class CanaraBankParser(BaseBankParser):
         "Statement of Account",
         "Syndicate Bank",  # Merged with Canara
     ]
+    DETECTION_RULES = [
+        (r"\bCNRB0\w{6}\b", 10, True),
+        ("canarabank.com", 10, False),
+        ("CANARA BANK", 3, False),
+        ("Syndicate Bank", 3, False),
+        ("Statement of Account", 1, False),
+    ]
+
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Canara Bank statement text into structured data."""

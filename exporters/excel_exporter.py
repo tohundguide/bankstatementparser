@@ -143,29 +143,9 @@ def export_to_csv(result: Dict, output_path: str):
 
 
 def _parse_balance_value(balance_str):
-    """Parse balance string to signed float. Cr/positive = +, Dr/negative = -."""
-    if not balance_str:
-        return None
-    s = str(balance_str).strip()
-    is_dr = False
-    # Check for Dr/DR suffix
-    for suffix in ['Dr.', 'DR.', 'Dr', 'DR']:
-        if s.endswith(suffix):
-            is_dr = True
-            s = s[:-len(suffix)].strip()
-            break
-    else:
-        # Check for Cr/CR suffix (positive, just strip)
-        for suffix in ['Cr.', 'CR.', 'Cr', 'CR']:
-            if s.endswith(suffix):
-                s = s[:-len(suffix)].strip()
-                break
-    s = s.replace(',', '').strip()
-    try:
-        val = float(s)
-        return -val if is_dr else val
-    except (ValueError, TypeError):
-        return None
+    """Parse balance string to signed float. Delegates to centralized implementation."""
+    from parsers.base_parser import BaseBankParser
+    return BaseBankParser.parse_balance_value(balance_str)
 
 
 def _create_transaction_sheet(wb: Workbook, result: Dict):

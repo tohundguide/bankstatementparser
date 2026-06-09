@@ -33,6 +33,7 @@ from flask import Flask, render_template, request, send_file, jsonify, redirect,
 # Our modules
 from extractors.text_extractor import extract_text, check_ocr_available
 from parsers.registry import detect_bank, get_parser
+from parsers.base_parser import BaseBankParser
 from parsers import llm_parser
 from exporters.excel_exporter import export_to_excel, export_to_csv
 from api_auth import require_api_key
@@ -62,6 +63,93 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 os.makedirs(app.config['FEEDBACK_FOLDER'], exist_ok=True)
 
+
+# ── Universal post-processing: fixes balance gaps, detects order, verifies ──
+
+_pbv = BaseBankParser.parse_balance_value  # shortcut
+
+
+def _parse_date(d):
+    """Parse DD-MM-YYYY or DD/MM/YYYY to datetime, or None."""
+    if not d:
+        return None
+    for fmt in ('%d-%m-%Y', '%d/%m/%Y', '%d-%m-%y'):
+        try:
+            return datetime.strptime(d.strip(), fmt)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def post_process(result):
+    """
+    Universal post-processing that runs after every parser's output.
+    
+    This single function retroactively protects ALL parsers against:
+    (a) Reverse-chronological order
+    (b) Missing balance fields (auto-fill from opening balance)
+    (c) Ambiguous W/D when both fields are empty but balance moves
+    (d) Balance verification flags
+    """
+    txns = result.get('transactions', [])
+    if not txns:
+        return result
+
+    # --- (a) Detect chronological direction from dates ---
+    dates = [_parse_date(t.get('date', '')) for t in txns]
+    valid_dates = [d for d in dates if d is not None]
+
+    is_reverse = False
+    if len(valid_dates) >= 2:
+        is_reverse = valid_dates[0] > valid_dates[-1]
+
+    # Work in chronological order (oldest first)
+    ordered = list(reversed(txns)) if is_reverse else list(txns)
+
+    # --- (b) Fill missing balances if we have opening balance + amounts ---
+    acct_info = result.get('account_info', {})
+    opening_str = acct_info.get('opening_balance')
+    opening = _pbv(opening_str) if opening_str else None
+
+    # If no opening_balance in account_info, try the first transaction's balance
+    if opening is None and ordered:
+        first_bal = _pbv(ordered[0].get('balance'))
+        if first_bal is not None:
+            opening = first_bal
+
+    have_balances = sum(1 for t in ordered if _pbv(t.get('balance')) is not None)
+
+    if have_balances < len(ordered) * 0.5 and opening is not None:
+        running = opening
+        for i, t in enumerate(ordered):
+            if i == 0 and _pbv(t.get('balance')) is not None:
+                running = _pbv(t.get('balance'))
+                continue
+            try:
+                w = float(str(t.get('withdrawal', '')).replace(',', '')) if t.get('withdrawal') else 0
+                d = float(str(t.get('deposit', '')).replace(',', '')) if t.get('deposit') else 0
+            except (ValueError, TypeError):
+                w, d = 0, 0
+            running = running + d - w
+            if _pbv(t.get('balance')) is None:
+                t['balance'] = f'{running:.2f}'
+
+    # --- (c) Infer W/D when both blank but balance moves ---
+    prev = None
+    for t in ordered:
+        bal = _pbv(t.get('balance'))
+        w = t.get('withdrawal', '')
+        d = t.get('deposit', '')
+        if prev is not None and bal is not None and not w and not d:
+            delta = round(bal - prev, 2)
+            if delta < 0:
+                t['withdrawal'] = f'{abs(delta):.2f}'
+            elif delta > 0:
+                t['deposit'] = f'{delta:.2f}'
+        if bal is not None:
+            prev = bal
+
+    return result
 
 # ── Auto-cleanup: delete temp files older than 1 hour ──
 import threading
@@ -172,7 +260,9 @@ def parse_statement():
             parser = get_parser(bank_code)
             if parser:
                 result = parser.parse(raw_text)
-                if not result or not result.get('transactions'):
+                if result and result.get('transactions'):
+                    result = post_process(result)
+                else:
                     result = None
         
         # 4b. LLM Fallback: try AI parsing if structured parser failed
@@ -219,7 +309,7 @@ def parse_statement():
         export_to_csv(result, csv_path)
 
         # 6. Compute balance verification for preview
-        from exporters.excel_exporter import _parse_balance_value
+        _parse_balance_value = _pbv  # use centralized version
         transactions = result['transactions']
         prev_bal = None
         v_match = 0
@@ -525,7 +615,9 @@ def parse_from_url():
             parser = get_parser(bank_code)
             if parser:
                 result = parser.parse(raw_text)
-                if not result or not result.get('transactions'):
+                if result and result.get('transactions'):
+                    result = post_process(result)
+                else:
                     result = None
 
         # 5b. LLM fallback
@@ -545,7 +637,7 @@ def parse_from_url():
             }), 400
 
         # 6. Build full JSON response with balance verification
-        from exporters.excel_exporter import _parse_balance_value
+        _parse_balance_value = _pbv  # use centralized version
         transactions = result['transactions']
 
         # Balance verification for ALL transactions
@@ -821,6 +913,7 @@ def batch_parse():
                     continue
                 
                 result = parser.parse(raw_text)
+                result = post_process(result)
                 
                 if not result['transactions']:
                     errors.append({'file': file.filename, 'error': 'No transactions parsed'})
@@ -1267,7 +1360,9 @@ def api_parse():
             parser = get_parser(bank_code)
             if parser:
                 result = parser.parse(raw_text)
-                if not result or not result.get('transactions'):
+                if result and result.get('transactions'):
+                    result = post_process(result)
+                else:
                     result = None
 
         if not result and llm_parser.is_available():
@@ -1288,7 +1383,7 @@ def api_parse():
         output_format = request.form.get('format', 'json').lower()
 
         # Balance verification
-        from exporters.excel_exporter import _parse_balance_value
+        _parse_balance_value = _pbv  # use centralized version
         prev_bal = None
         v_match = 0
         v_total = 0

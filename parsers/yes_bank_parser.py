@@ -41,6 +41,15 @@ class YesBankParser(BaseBankParser):
         "Statement of account",
         "YES BANK LTD",
     ]
+    DETECTION_RULES = [
+        (r"\bYESB0\w{6}\b", 10, True),
+        ("yesbank.in", 10, False),
+        ("YES BANK LIMITED", 3, False),
+        ("YES TOUCH", 3, False),
+        ("YesRewardz", 3, False),
+        ("Statement of account", 1, False),
+    ]
+
 
     # Month name to number
     MONTHS = {
@@ -178,16 +187,15 @@ class YesBankParser(BaseBankParser):
                 val_date_str = m.group(2)   # "21 Mar 2026"
                 rest = m.group(3).strip()   # "SCREF... Description Amount Balance"
 
-                withdrawal = ''
-                deposit = ''
                 balance = ''
                 chq_ref = ''
                 narration = rest
+                raw_amount = ''
 
                 # Extract amounts from end of line
                 ab = amount_balance_re.search(rest)
                 if ab:
-                    amount = ab.group(1).replace(',', '')
+                    raw_amount = ab.group(1).replace(',', '')
                     balance = ab.group(2).replace(',', '')
                     narration_part = rest[:ab.start()].strip()
 
@@ -199,19 +207,6 @@ class YesBankParser(BaseBankParser):
                         narration = ref_m.group(2).strip()
                     else:
                         narration = narration_part
-
-                    # Determine W vs D by comparing balance to previous
-                    prev_bal = self._get_prev_balance(transactions)
-                    curr_bal = float(balance)
-
-                    if prev_bal is not None:
-                        if curr_bal > prev_bal:
-                            deposit = amount
-                        else:
-                            withdrawal = amount
-                    else:
-                        # No previous balance — can't determine, default withdrawal
-                        withdrawal = amount
                 else:
                     # No amount on this line — might be a continuation
                     ref_m = re.match(r'(\S+)\s+(.*)', rest)
@@ -225,9 +220,10 @@ class YesBankParser(BaseBankParser):
                     'date': date_normalized,
                     'particulars': narration,
                     'chq_ref': chq_ref,
-                    'withdrawal': withdrawal,
-                    'deposit': deposit,
+                    'withdrawal': '',
+                    'deposit': '',
                     'balance': balance,
+                    '_raw_amount': raw_amount,
                 }
                 continue
 
@@ -242,6 +238,9 @@ class YesBankParser(BaseBankParser):
         # Clean up narrations
         for txn in transactions:
             txn['particulars'] = re.sub(r'\s+', ' ', txn['particulars']).strip()
+
+        # Classify W/D using balance math (handles reverse-chronological order)
+        self._classify_amounts(transactions)
 
         return {
             'bank_name': self.BANK_NAME,
@@ -262,6 +261,151 @@ class YesBankParser(BaseBankParser):
             return float(str(bal).replace(',', ''))
         except (ValueError, TypeError):
             return None
+
+    def _classify_amounts(self, transactions: List[Dict]):
+        """
+        Classify raw amounts as withdrawal or deposit using balance arithmetic.
+
+        Yes Bank statements can be in reverse-chronological order (newest first).
+        This method detects the order and uses the correct balance math:
+
+        Chronological:     bal[i] = bal[i-1] + deposit[i] - withdrawal[i]
+        Reverse-chrono:    bal[i-1] = bal[i] + deposit[i-1] - withdrawal[i-1]
+                       =>  bal[i] = bal[i-1] - deposit[i-1] + withdrawal[i-1]
+
+        After classification, reverse-ordered statements are flipped to chronological.
+        """
+        if len(transactions) < 2:
+            # Can't determine direction, default to withdrawal
+            for txn in transactions:
+                amt = txn.pop('_raw_amount', '')
+                if amt:
+                    txn['withdrawal'] = amt
+            return
+
+        # Detect order: check if balances trend up or down going top to bottom
+        # In reverse-chrono, balances increase going down (older = more accumulated)
+        # In chrono, balances generally follow W/D pattern
+        balances = []
+        for txn in transactions:
+            try:
+                b = float(txn['balance']) if txn['balance'] else None
+            except (ValueError, TypeError):
+                b = None
+            balances.append(b)
+
+        # Count balance increases vs decreases
+        increases = 0
+        decreases = 0
+        for i in range(1, len(balances)):
+            if balances[i] is not None and balances[i-1] is not None:
+                if balances[i] > balances[i-1]:
+                    increases += 1
+                elif balances[i] < balances[i-1]:
+                    decreases += 1
+
+        # If balances mostly increase going top to bottom, the statement is likely
+        # reverse-chronological (older=higher balance as we go down)
+        is_reverse = increases > decreases
+
+        # Classify amounts using balance math
+        for i, txn in enumerate(transactions):
+            amt_str = txn.pop('_raw_amount', '')
+            if not amt_str:
+                continue
+
+            try:
+                amt = float(amt_str)
+                curr_bal = float(txn['balance']) if txn['balance'] else None
+            except (ValueError, TypeError):
+                txn['withdrawal'] = amt_str  # default
+                continue
+
+            if i == 0 or curr_bal is None:
+                txn['withdrawal'] = amt_str  # Can't classify first row
+                continue
+
+            # Get previous row's balance
+            try:
+                prev_bal = float(transactions[i-1]['balance']) if transactions[i-1]['balance'] else None
+            except (ValueError, TypeError):
+                prev_bal = None
+
+            if prev_bal is None:
+                txn['withdrawal'] = amt_str
+                continue
+
+            if is_reverse:
+                # In reverse order, chronological relationship is:
+                # prev_row_bal = curr_row_bal + deposit_of_prev_row - withdrawal_of_prev_row
+                # For CURRENT row's amount (curr is older than prev):
+                # The amount on curr_row affected the transition from curr_row to prev_row
+                # prev_bal = curr_bal - amount (if withdrawal on this row)
+                # prev_bal = curr_bal + amount (if deposit on this row) ... wait wrong
+
+                # Actually: prev_row is NEWER in time. curr_row is OLDER.
+                # Chronologically: curr_row happened first, then prev_row.
+                # Between curr_row and prev_row, the prev_row's amount happened.
+                # But we want to classify CURR_ROW's amount.
+                # curr_row's amount affected the transition from even-older to curr_row.
+                # We need the NEXT row (i+1, even older) to classify curr_row's amount.
+                # Use: curr_bal = next_bal + deposit[i] - withdrawal[i]
+                if i < len(transactions) - 1:
+                    try:
+                        next_bal = float(transactions[i+1]['balance']) if transactions[i+1]['balance'] else None
+                    except (ValueError, TypeError):
+                        next_bal = None
+
+                    if next_bal is not None:
+                        # curr_bal = next_bal + deposit - withdrawal
+                        # If deposit: curr_bal = next_bal + amt → diff_d = |curr_bal - next_bal - amt|
+                        # If withdrawal: curr_bal = next_bal - amt → diff_w = |curr_bal - next_bal + amt|
+                        diff_as_deposit = abs(curr_bal - next_bal - amt)
+                        diff_as_withdrawal = abs(curr_bal - next_bal + amt)
+
+                        if diff_as_deposit < diff_as_withdrawal:
+                            txn['deposit'] = amt_str
+                        else:
+                            txn['withdrawal'] = amt_str
+                    else:
+                        txn['withdrawal'] = amt_str
+                else:
+                    # Last row (oldest) — use opening/closing balance info if available
+                    txn['withdrawal'] = amt_str
+            else:
+                # Chronological order: bal[i] = bal[i-1] + deposit - withdrawal
+                diff_as_deposit = abs(prev_bal + amt - curr_bal)
+                diff_as_withdrawal = abs(prev_bal - amt - curr_bal)
+
+                if diff_as_deposit < diff_as_withdrawal:
+                    txn['deposit'] = amt_str
+                else:
+                    txn['withdrawal'] = amt_str
+
+        # For reverse-chrono, also need to classify the FIRST row (newest)
+        # using the second row's balance
+        if is_reverse and len(transactions) >= 2:
+            txn = transactions[0]
+            if not txn['withdrawal'] and not txn['deposit'] and '_raw_amount' not in txn:
+                pass  # Already classified or no amount
+            # First row was classified with default, let's verify
+            if txn['withdrawal'] and not txn['deposit']:
+                try:
+                    amt = float(txn['withdrawal'])
+                    curr_bal = float(txn['balance']) if txn['balance'] else None
+                    next_bal = float(transactions[1]['balance']) if transactions[1]['balance'] else None
+                    if curr_bal is not None and next_bal is not None:
+                        diff_as_deposit = abs(curr_bal - next_bal - amt)
+                        diff_as_withdrawal = abs(curr_bal - next_bal + amt)
+                        if diff_as_deposit < diff_as_withdrawal:
+                            txn['deposit'] = txn['withdrawal']
+                            txn['withdrawal'] = ''
+                except (ValueError, TypeError):
+                    pass
+
+        # Reverse the transaction list to chronological order if needed
+        if is_reverse:
+            transactions.reverse()
 
     def _extract_account_info(self, raw_text: str) -> Dict:
         """Extract account information from header."""
