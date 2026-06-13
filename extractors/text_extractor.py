@@ -249,12 +249,13 @@ def _extract_via_ocr(filepath: str) -> str:
             break
     
     # Convert PDF pages to images
+    # DPI 150 is sufficient for bank statement text (was 300 — caused excessive CPU/RAM)
     try:
-        images = convert_from_path(filepath, dpi=300, poppler_path=poppler_path)
+        images = convert_from_path(filepath, dpi=150, poppler_path=poppler_path, grayscale=True)
     except Exception as e:
-        # Try with lower DPI if memory is an issue
+        # Try with even lower DPI as fallback
         try:
-            images = convert_from_path(filepath, dpi=200, poppler_path=poppler_path)
+            images = convert_from_path(filepath, dpi=100, poppler_path=poppler_path, grayscale=True)
         except Exception:
             raise RuntimeError(
                 f"Could not convert PDF to images: {str(e)}. "
@@ -267,8 +268,10 @@ def _extract_via_ocr(filepath: str) -> str:
     all_text = []
     for i, img in enumerate(images):
         try:
-            # Use English + basic config for bank statements
-            custom_config = r'--oem 3 --psm 6'
+            # Limit Tesseract to 1 CPU thread per job to prevent VPS overload.
+            # OMP_THREAD_LIMIT=1 caps OpenMP threads; without this, Tesseract
+            # uses all available cores and 2 concurrent jobs = 100% CPU saturation.
+            custom_config = r'--oem 3 --psm 6 -c OMP_THREAD_LIMIT=1'
             page_text = pytesseract.image_to_string(img, config=custom_config)
             if page_text.strip():
                 all_text.append(page_text)
