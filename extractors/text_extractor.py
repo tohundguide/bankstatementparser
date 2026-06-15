@@ -14,6 +14,12 @@ import os
 import re
 import logging
 
+# Limit Tesseract to 1 OpenMP thread per job.
+# Must be set BEFORE importing pytesseract or calling tesseract.
+# Without this, Tesseract uses ALL CPU cores — 2 concurrent jobs = 100% CPU saturation.
+os.environ['OMP_THREAD_LIMIT'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
 logger = logging.getLogger(__name__)
 
 
@@ -268,10 +274,8 @@ def _extract_via_ocr(filepath: str) -> str:
     all_text = []
     for i, img in enumerate(images):
         try:
-            # Limit Tesseract to 1 CPU thread per job to prevent VPS overload.
-            # OMP_THREAD_LIMIT=1 caps OpenMP threads; without this, Tesseract
-            # uses all available cores and 2 concurrent jobs = 100% CPU saturation.
-            custom_config = r'--oem 3 --psm 6 -c OMP_THREAD_LIMIT=1'
+            # OMP_THREAD_LIMIT=1 is set at module level to cap CPU per job.
+            custom_config = r'--oem 3 --psm 6'
             page_text = pytesseract.image_to_string(img, config=custom_config)
             if page_text.strip():
                 all_text.append(page_text)

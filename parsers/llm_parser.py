@@ -223,7 +223,7 @@ def parse_with_llm(raw_text: str) -> Optional[Dict]:
       5. Save learned bank profile for detection
     
     Returns:
-        Parsed result dict, or None on failure
+        Parsed result di    ct, or None on failure
     """
     if not _GEMINI_KEY:
         return None
