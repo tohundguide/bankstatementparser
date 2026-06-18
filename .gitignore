@@ -2,7 +2,8 @@
 Ref Docs/
 
 # ─── Build & Deploy ───
-docker-compose.yml
+# docker-compose.yml is intentionally tracked (see deployment exceptions at the
+# bottom of this file). No secrets live in it — secrets stay in .env.
 
 # ─── Python ───
 __pycache__/
@@ -57,3 +58,12 @@ Thumbs.db
 .gemini/
 .agent/
 *.pdf
+
+# ─── Deployment & HDFC regression test (force-tracked) ───
+# These must override the broad *.md / *.txt / test_*.py rules above so the
+# VPS deploy files and the HDFC OCR regression suite reach the repo/server.
+!docker-compose.yml
+!DEPLOY_VPS.md
+!tests/test_hdfc_robustness.py
+!tests/hdfc_seiza_fixture.txt
+!tests/seiza_ocr_dump.txt

@@ -145,7 +145,7 @@ class HDFCBankParser(BaseBankParser):
         running_balance: Optional[float] = opening_balance
 
         for raw_line in raw_text.split('\n'):
-            stripped = raw_line.strip()
+            stripped = self._clean_line(raw_line)
             if not stripped:
                 continue
 
@@ -186,6 +186,26 @@ class HDFCBankParser(BaseBankParser):
             'period': period,
             'transactions': transactions,
         }
+
+    @staticmethod
+    def _clean_line(raw_line: str) -> str:
+        """
+        Normalise a physical line before parsing.
+
+        Scanned HDFC statements go through OCR, which sprinkles in artefacts that
+        would otherwise break column detection:
+          * vertical table gridlines read as pipe characters ("01/05/26 | NEFT")
+          * stray commas appended to amounts ("5,255.45," instead of "5,255.45")
+
+        We drop pipes and any comma that is not flanked by digits (i.e. not an
+        Indian-grouping separator), then collapse whitespace and trim leading
+        punctuation left over from the gridline column.
+        """
+        s = raw_line.replace('|', ' ')
+        # Remove commas that aren't part of a number group (e.g. trailing "45,").
+        s = re.sub(r',(?!\d)', '', s)
+        s = re.sub(r'[ \t]+', ' ', s).strip()
+        return s
 
     # ── Transaction row builder ──
 
@@ -312,7 +332,18 @@ class HDFCBankParser(BaseBankParser):
 
         m = re.search(r'M/S\.?\s*(.+)', raw_text)
         if m:
-            info['account_holder'] = m.group(1).strip()
+            holder = m.group(1).strip()
+            # On scanned statements the adjacent header column can bleed into the
+            # M/S line via OCR ("... PRIVATE LIMITED sy, NE ey 10091"). Trim at the
+            # company suffix when present.
+            sm = re.search(
+                r'^(.*?\b(?:PRIVATE LIMITED|PVT\.?\s*LTD\.?|LIMITED|LTD\.?|LLP|'
+                r'& SONS|ENTERPRISES|TRADERS|INDUSTRIES|CORPORATION))\b',
+                holder, re.IGNORECASE
+            )
+            if sm:
+                holder = sm.group(1)
+            info['account_holder'] = holder.strip()
 
         m = re.search(r'Account\s*Type\s*:?\s*(.+)', raw_text, re.IGNORECASE)
         if m:

@@ -291,47 +291,69 @@ def check_ocr_available() -> dict:
     Check if OCR dependencies are available.
     Returns a dict with status info.
     """
+    import shutil
+
     result = {
         'available': False,
         'pytesseract': False,
         'pdf2image': False,
         'tesseract_binary': False,
+        'poppler_binary': False,
         'message': ''
     }
-    
+
     try:
         import pytesseract
         result['pytesseract'] = True
     except ImportError:
         pass
-    
+
     try:
         from pdf2image import convert_from_path
         result['pdf2image'] = True
     except ImportError:
         pass
-    
+
     # Check Tesseract binary
     tesseract_paths = [
         r'C:\Program Files\Tesseract-OCR\tesseract.exe',
         r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
     ]
-    
+
     for tpath in tesseract_paths:
         if os.path.exists(tpath):
             result['tesseract_binary'] = True
             break
-    
+
     # Also check if it's in PATH
     if not result['tesseract_binary']:
-        import shutil
         if shutil.which('tesseract'):
             result['tesseract_binary'] = True
-    
-    result['available'] = all([result['pytesseract'], result['pdf2image'], result['tesseract_binary']])
-    
+
+    # Check Poppler (pdftoppm/pdfinfo) — pdf2image shells out to it. Without this,
+    # OCR fails at PDF->image conversion even though the Python imports succeed.
+    # This is the common silent failure on a fresh Linux VPS (apt: poppler-utils).
+    if shutil.which('pdftoppm') or shutil.which('pdfinfo'):
+        result['poppler_binary'] = True
+    else:
+        poppler_search_paths = [
+            r'C:\poppler\poppler-24.08.0\Library\bin',
+            r'C:\Program Files\poppler\Library\bin',
+            r'C:\Program Files\poppler-24.08.0\Library\bin',
+            r'C:\poppler\Library\bin',
+        ]
+        for pp in poppler_search_paths:
+            if os.path.exists(os.path.join(pp, 'pdftoppm.exe')):
+                result['poppler_binary'] = True
+                break
+
+    result['available'] = all([
+        result['pytesseract'], result['pdf2image'],
+        result['tesseract_binary'], result['poppler_binary'],
+    ])
+
     if result['available']:
-        result['message'] = 'OCR is fully available (Tesseract + pdf2image)'
+        result['message'] = 'OCR is fully available (Tesseract + Poppler + pdf2image)'
     else:
         missing = []
         if not result['pytesseract']:
@@ -339,7 +361,9 @@ def check_ocr_available() -> dict:
         if not result['pdf2image']:
             missing.append('pip install pdf2image Pillow')
         if not result['tesseract_binary']:
-            missing.append('Install Tesseract from https://github.com/UB-Mannheim/tesseract/wiki')
+            missing.append('Install Tesseract (Linux: apt install tesseract-ocr)')
+        if not result['poppler_binary']:
+            missing.append('Install Poppler (Linux: apt install poppler-utils)')
         result['message'] = 'Missing: ' + ', '.join(missing)
-    
+
     return result

@@ -1,0 +1,19 @@
+# Caddy reverse proxy — automatic HTTPS via Let's Encrypt.
+# Replace parser.example.com with your real (sub)domain, then point that
+# domain's DNS A record at this VPS's public IP before starting the stack.
+
+parser.example.com {
+	encode gzip
+
+	# Bank statements can be large scanned PDFs that need OCR — allow big
+	# uploads and give the backend time to finish (matches gunicorn's timeout).
+	request_body {
+		max_size 50MB
+	}
+	reverse_proxy app:8080 {
+		transport http {
+			read_timeout 180s
+			write_timeout 180s
+		}
+	}
+}

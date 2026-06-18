@@ -1,0 +1,63 @@
+# Bank Statement Parser — VPS deployment stack
+# =============================================
+# Two services:
+#   app   — the Flask/gunicorn parser (Tesseract OCR + Poppler baked into image)
+#   caddy — reverse proxy with automatic HTTPS (Let's Encrypt)
+#
+# Quick start on the VPS:
+#   1. cp .env.example .env   &&   edit .env   (add GEMINI_API_KEY etc. if wanted)
+#   2. edit Caddyfile         — replace parser.example.com with your domain
+#   3. docker compose up -d --build
+#
+# To run WITHOUT a domain (just http://VPS_IP:8080), comment out the `caddy`
+# service and uncomment the `ports` mapping on `app`.
+
+services:
+  app:
+    build: .
+    image: bankstatementparser:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: "8080"
+      # Serve at the domain ROOT (override the image's /tools/... subpath).
+      # If you instead mount under an existing site at /tools/bankstatementparser,
+      # set this back to that value and configure your proxy to pass the prefix.
+      SCRIPT_NAME: ""
+      PYTHONUNBUFFERED: "1"
+      PYTHONIOENCODING: "utf-8"
+    volumes:
+      # Persist learned bank profiles, feedback uploads, and generated files
+      # across container rebuilds.
+      - ./learned:/app/learned
+      - ./feedback:/app/feedback
+      - ./output:/app/output
+    expose:
+      - "8080"
+    # --- No-domain mode: uncomment to reach the app directly at VPS_IP:8080 ---
+    # ports:
+    #   - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/status')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
