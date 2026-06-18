@@ -144,18 +144,62 @@ class HDFCBankParser(BaseBankParser):
         current_txn: Optional[Dict] = None
         running_balance: Optional[float] = opening_balance
 
+        page_re = re.compile(r'^PageNo\.?:?', re.IGNORECASE)
+
+        # The statement is split into transaction rows interleaved with repeated
+        # page headers, per-page footers, and a final summary block. On scanned
+        # statements OCR typos let some of those noise lines dodge the per-line
+        # skip list and bleed into a transaction's narration (the last row is the
+        # worst hit). A small block state-machine brackets the noise instead.
+        #   'header'  — from "Page No" until the "Statement of account" line
+        #   'footer'  — from the standalone "HDFC BANK LIMITED" until next page/txn
+        #   'summary' — from "Opening Balance Dr Count ... Closing Bal" to EOF
+        skip_block: Optional[str] = None
+
         for raw_line in raw_text.split('\n'):
             stripped = self._clean_line(raw_line)
             if not stripped:
                 continue
 
-            # Space-insensitive header/footer skip.
             compact = re.sub(r'\s+', '', stripped)
+            cu = compact.upper()
+            is_date_line = bool(txn_date_re.match(stripped))
+
+            # End-of-statement summary → everything after is non-transaction data.
+            if cu.startswith('OPENINGBALANCE') and ('COUNT' in cu or 'CLOSINGBAL' in cu):
+                skip_block = 'summary'
+            if skip_block == 'summary':
+                continue
+
+            # Block openers (override any current block).
+            if page_re.match(compact):
+                skip_block = 'header'
+                continue
+            if cu.startswith('HDFCBANKLIMITED'):
+                skip_block = 'footer'
+                continue
+
+            # Inside a header/footer block: swallow lines until the block closes.
+            if skip_block == 'header':
+                if 'STATEMENTOFACCOUNT' in cu:
+                    skip_block = None
+                    continue
+                if is_date_line:
+                    skip_block = None  # OCR-mangled marker safety net: a real row
+                else:
+                    continue
+            elif skip_block == 'footer':
+                if is_date_line:
+                    skip_block = None
+                else:
+                    continue
+
+            # Space-insensitive per-line skip (stray header/footer fragments).
             if any(r.match(compact) for r in skip_res):
                 continue
 
-            m = txn_date_re.match(stripped)
-            if m:
+            if is_date_line:
+                m = txn_date_re.match(stripped)
                 if current_txn:
                     transactions.append(current_txn)
 
@@ -317,9 +361,12 @@ class HDFCBankParser(BaseBankParser):
             'type': '',
         }
 
-        m = re.search(r'Account\s*No\s*:?\s*(\d{6,})', raw_text, re.IGNORECASE)
+        # The account number sometimes OCRs with its leading 5 read as a visually
+        # similar "S" or "$" (e.g. "Account No: $0200087642434"). Accept those for
+        # the FIRST character only, then map them back to 5.
+        m = re.search(r'Account\s*No\.?\s*:?\s*([5S\$]?\d{6,})', raw_text, re.IGNORECASE)
         if m:
-            info['account_number'] = m.group(1)
+            info['account_number'] = re.sub(r'^[S\$]', '5', m.group(1), flags=re.IGNORECASE)
 
         m = re.search(r'Account\s*Branch\s*:?\s*(.+)', raw_text, re.IGNORECASE)
         if m:

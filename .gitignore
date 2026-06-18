@@ -67,3 +67,4 @@ Thumbs.db
 !tests/test_hdfc_robustness.py
 !tests/hdfc_seiza_fixture.txt
 !tests/seiza_ocr_dump.txt
+!tests/cafe_seiza_ocr_dump.txt

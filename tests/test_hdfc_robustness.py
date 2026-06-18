@@ -128,6 +128,45 @@ def main():
     else:
         print("  [SKIP] real_OCR_130txns   (seiza_ocr_dump.txt not present)")
 
+    # Second real scanned statement ("Cafe SEIZA", May 2026, 129 txns). This one
+    # exposed three OCR-robustness gaps, each locked in below:
+    #   1. DETECTION: a counterparty IFSC in a narration ("NEFT DR-SBIN0007407-")
+    #      hijacked detection to SBI -> 0 txns. The labelled-IFSC anchor must win.
+    #   2. ACCOUNT NO: the leading 5 OCR'd as "$" ("Account No: $0200087642434").
+    #   3. NARRATION BLEED: the end-of-statement summary block and OCR-typo'd page
+    #      footers must not leak into the last transaction's narration.
+    cafe_dump = os.path.join(os.path.dirname(__file__), 'cafe_seiza_ocr_dump.txt')
+    if os.path.exists(cafe_dump):
+        with open(cafe_dump, encoding='utf-8') as f:
+            cafe_text = f.read()
+
+        if detect_bank(cafe_text) != 'hdfc_bank':
+            failures.append(f"cafe detection: got {detect_bank(cafe_text)!r}, expected 'hdfc_bank'")
+
+        result = parser.parse(cafe_text)
+        txns = result['transactions']
+        cinfo = result['account_info']
+        opening = _pbv(cinfo.get('opening_balance', ''))
+        ok, tot = _verify_balance(txns, opening)
+
+        if cinfo.get('account_number') != '50200087642434':
+            failures.append(f"cafe account_number: got {cinfo.get('account_number')!r}")
+
+        # The last narration must be clean of summary/footer bleed.
+        last_narr = txns[-1]['particulars'] if txns else ''
+        if re.search(r'Opening Balance|Closing Bal|Contents of|GSTIN', last_narr, re.I):
+            failures.append(f"cafe last-narration bleed: {last_narr[:60]!r}")
+
+        # 129 real rows; >=97% of balance deltas reconcile (a few isolated single-
+        # digit OCR misreads in the source image are expected and tolerated).
+        ratio = ok / tot if tot else 0
+        status = 'OK ' if (len(txns) == 129 and ratio >= 0.97 and tot > 0) else 'FAIL'
+        print(f"  [{status}] cafe_OCR_129txns   txns={len(txns)} balance={ok}/{tot}")
+        if status == 'FAIL':
+            failures.append(f"cafe OCR: txns={len(txns)} balance={ok}/{tot} ratio={ratio:.2f}")
+    else:
+        print("  [SKIP] cafe_OCR_129txns   (cafe_seiza_ocr_dump.txt not present)")
+
     print()
     if failures:
         print("FAILED:")
