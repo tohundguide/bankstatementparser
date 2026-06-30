@@ -53,7 +53,11 @@ CORS(app, resources={
         'http://localhost:3000',
     ]},
 }, supports_credentials=False)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+# Max upload size — configurable via MAX_UPLOAD_MB (default 200MB).
+# Large bank statements (long text PDFs with embedded fonts/images) can run big;
+# keep this in sync with the Caddy `request_body max_size` in the Caddyfile.
+MAX_UPLOAD_MB = int(os.environ.get('MAX_UPLOAD_MB', '200'))
+app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
 app.config['FEEDBACK_FOLDER'] = os.path.join(os.path.dirname(__file__), 'feedback')
@@ -587,8 +591,8 @@ def parse_from_url():
         file_size = os.path.getsize(filepath)
         if file_size < 10:
             return jsonify({'error': 'Downloaded file is empty or too small.'}), 400
-        if file_size > 50 * 1024 * 1024:
-            return jsonify({'error': 'File exceeds 50MB limit.'}), 400
+        if file_size > MAX_UPLOAD_MB * 1024 * 1024:
+            return jsonify({'error': f'File exceeds {MAX_UPLOAD_MB}MB limit.'}), 400
 
         # 3. Extract raw text
         try:
@@ -1209,10 +1213,10 @@ def _download_from_url(url: str, upload_folder: str) -> tuple[str, str]:
                 if 'filename=' in cd:
                     filename = cd.split('filename=')[-1].strip('"\'')
         
-        # Size check
-        max_size = 50 * 1024 * 1024  # 50MB
+        # Size check (mirrors the upload cap; configurable via MAX_UPLOAD_MB)
+        max_size = MAX_UPLOAD_MB * 1024 * 1024
         if len(data) > max_size:
-            raise ValueError(f'File too large ({len(data) / 1024 / 1024:.1f}MB). Maximum: 50MB.')
+            raise ValueError(f'File too large ({len(data) / 1024 / 1024:.1f}MB). Maximum: {MAX_UPLOAD_MB}MB.')
         
         if len(data) < 100:
             raise ValueError('Downloaded file is too small or empty. Check the URL and sharing permissions.')

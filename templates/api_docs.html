@@ -157,7 +157,7 @@
             <thead><tr><th>Limit</th><th>Value</th></tr></thead>
             <tbody>
                 <tr><td>Requests per hour</td><td>{{ rate_limit }} requests</td></tr>
-                <tr><td>Max file size</td><td>50 MB</td></tr>
+                <tr><td>Max file size</td><td>200 MB</td></tr>
             </tbody>
         </table>
         <p>Rate limit info is included in response headers:</p>
@@ -181,7 +181,7 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
         <table>
             <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
             <tbody>
-                <tr><td>file</td><td>File</td><td>No*</td><td>Bank statement (PDF, DOCX, TXT, CSV). Max 50MB.</td></tr>
+                <tr><td>file</td><td>File</td><td>No*</td><td>Bank statement (PDF, DOCX, TXT, CSV). Max 200MB.</td></tr>
                 <tr><td>url</td><td>String</td><td>No*</td><td>URL to download the file from. Supports <strong>Google Drive</strong>, Dropbox, OneDrive, and direct links. File must be publicly shared.</td></tr>
                 <tr><td>bank</td><td>String</td><td>No</td><td>Bank code (e.g. <code>jkbank</code>, <code>hdfc</code>). Default: <code>auto</code> (auto-detect).</td></tr>
                 <tr><td>password</td><td>String</td><td>No</td><td>PDF password, if the file is password-protected.</td></tr>

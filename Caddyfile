@@ -5,15 +5,16 @@
 parser.example.com {
 	encode gzip
 
-	# Bank statements can be large scanned PDFs that need OCR — allow big
-	# uploads and give the backend time to finish (matches gunicorn's timeout).
+	# Bank statements can be large (long text PDFs, or scanned PDFs needing OCR) —
+	# allow big uploads and give the backend time to finish. Keep max_size in sync
+	# with MAX_UPLOAD_MB in the app, and the timeouts >= gunicorn's --timeout.
 	request_body {
-		max_size 50MB
+		max_size 200MB
 	}
 	reverse_proxy app:8080 {
 		transport http {
-			read_timeout 180s
-			write_timeout 180s
+			read_timeout 300s
+			write_timeout 300s
 		}
 	}
 }

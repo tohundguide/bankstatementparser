@@ -34,12 +34,13 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/tools/bankstatementparser/status')" || exit 1
 
 # Run with Gunicorn (production WSGI server)
-# 1 worker + 2 threads (512MB RAM can't handle 2 full worker forks with OCR)
-# Timeout = 120s (bank parsing can take time for large files)
+# 1 worker keeps memory bounded; threads handle light concurrency.
+# Timeout = 300s — large statements (long text PDFs / OCR) can take minutes to
+# extract; must be >= Caddy's read/write timeouts so the proxy doesn't cut first.
 CMD gunicorn app:app \
     --bind 0.0.0.0:${PORT} \
     --workers 1 \
     --threads 2 \
-    --timeout 120 \
+    --timeout 300 \
     --access-logfile - \
     --error-logfile -

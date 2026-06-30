@@ -114,6 +114,14 @@ def _extract_from_pdf(filepath: str, password: str = None) -> str:
                 page_text = page.extract_text()
                 if page_text:
                     pages.append(page_text)
+                # Release this page's parsed objects/layout cache before moving on.
+                # Without this, pdfplumber retains every page's objects in RAM, so a
+                # large multi-hundred-page PDF grows memory linearly and can OOM.
+                # With it, peak memory stays roughly flat regardless of page count.
+                try:
+                    page.flush_cache()
+                except Exception:
+                    pass
             text = '\n'.join(pages)
             if text.strip():
                 logger.info(f"Extracted {len(text)} chars via pdfplumber")
