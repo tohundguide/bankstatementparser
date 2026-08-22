@@ -44,12 +44,15 @@ class AxisBankParser(BaseBankParser):
         ("AXIS BANK", 3, False),
         ("Axis eDGE", 3, False),
         ("Detailed Statement for a/c", 3, False),
+        ("Statement of Axis Bank Account No", 3, False),
         ("Txn Date", 1, False),
     ]
 
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Axis Bank statement text into structured data."""
+        if self._is_corporate_format(raw_text):
+            return self._parse_corporate(raw_text)
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
 
@@ -503,6 +506,14 @@ class AxisBankParser(BaseBankParser):
         if m:
             return f"{m.group(1)} to {m.group(2)}"
 
+        # Corporate: "( From : 26/05/2025 To : 25/05/2026 )"
+        m = re.search(
+            r'From\s*:\s*(\d{2}/\d{2}/\d{4})\s*To\s*:\s*(\d{2}/\d{2}/\d{4})',
+            raw_text, re.IGNORECASE
+        )
+        if m:
+            return f"{m.group(1)} to {m.group(2)}"
+
         # "01/12/2025 to 31/12/2025" at top of document
         m = re.search(
             r'(\d{2}/\d{2}/\d{4})\s+to\s+(\d{2}/\d{2}/\d{4})',
@@ -512,3 +523,220 @@ class AxisBankParser(BaseBankParser):
             return f"{m.group(1)} to {m.group(2)}"
 
         return 'N/A'
+
+    # ──────────────────────────────────────────────────────────────────
+    # Corporate format ("neo for corporates" / Account Statement Report)
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # Layout (one table row, may split across text lines):
+    #   S.NO TxnDate ValueDate Particulars Amount(INR) DR|CR Balance(INR) [Cheque] Branch
+    #
+    # Extraction quirks (pdfplumber):
+    #   - Single-line rows: everything on one line, in column order.
+    #   - Wrapped rows: the FIRST visual narration line carries the amount/
+    #     DR-CR/balance columns and appears BEFORE the "S.NO date date ..."
+    #     line; further narration lines follow after it.
+    #   - Narration text that wraps inside the cell can arrive character-
+    #     interleaved (two visual lines merged). Amounts, dates, DR/CR and
+    #     balances are never affected — only the narration is garbled, so
+    #     numeric output stays exact.
+
+    def _is_corporate_format(self, raw_text: str) -> bool:
+        """Detect the corporate 'Account Statement Report' layout."""
+        if 'Statement of Axis Bank Account No' in raw_text:
+            return True
+        if re.search(r'Opening\s+Balance\s*:\s*INR', raw_text):
+            return True
+        return ('Debit/Credit' in raw_text and 'Balance(INR)' in raw_text)
+
+    # Row start: "12 02/07/2025 02/07/2025 <rest…>"
+    _CORP_ROW = re.compile(
+        r'^\s*(\d{1,4})\s+(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})(?:\s+(.*))?$'
+    )
+    # Amount columns at end of a line: "<narration> 13,000.00 CR 13,000.00 [branch…]"
+    _CORP_AMOUNT_TAIL = re.compile(
+        r'^(.*?)\s*(-?[\d,]+\.\d{2})\s+(CR|DR)\s+(-?[\d,]+\.\d{2})(?:\s+(.+))?$'
+    )
+    _CORP_SKIP = re.compile(
+        r'^(S\.?\s*NO\s+Transaction|Date\s*\(dd/mm/yyyy\)|\(dd/mm/yyyy\)|Number)\b',
+        re.IGNORECASE
+    )
+    _CORP_END = re.compile(
+        r'^(?:\d{1,4}\s+)?(TRANSACTION\s+TOTAL|Cheque\s+Return\s+Details|Unless\s+the\s+constituent)',
+        re.IGNORECASE
+    )
+
+    def _parse_corporate(self, raw_text: str) -> Dict:
+        """Parse the corporate 'Account Statement Report' layout."""
+        account_info = self._extract_corporate_account_info(raw_text)
+        period = self._extract_period(raw_text)
+
+        opening_re = re.compile(
+            r'Opening\s+Balance\s*:\s*(?:INR\s*)?(-?[\d,]+\.\d{2})', re.IGNORECASE)
+        closing_re = re.compile(
+            r'Closing\s+Balance\s*:\s*(?:INR\s*)?(-?[\d,]+\.\d{2})', re.IGNORECASE)
+
+        transactions: List[Dict] = []
+        pending = None   # amount columns seen on a narration line, S.NO row not yet seen
+        current = None   # last row, still accepting narration continuation lines
+        ended = False
+        opening_balance = None
+        closing_balance = None
+
+        for raw_line in raw_text.split('\n'):
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            cm = closing_re.search(line)
+            if cm:
+                closing_balance = cm.group(1).replace(',', '')
+                ended = True
+                continue
+
+            if self._CORP_END.match(line):
+                current = None
+                pending = None
+                ended = True
+                continue
+
+            if ended:
+                continue
+
+            om = opening_re.search(line)
+            if om and opening_balance is None:
+                opening_balance = om.group(1).replace(',', '')
+                transactions.append({
+                    'date': '',
+                    'particulars': 'Opening Balance',
+                    'chq_ref': '',
+                    'withdrawal': '',
+                    'deposit': '',
+                    'balance': opening_balance,
+                })
+                continue
+
+            if self._CORP_SKIP.match(line):
+                continue
+
+            rm = self._CORP_ROW.match(line)
+            if rm:
+                rest = (rm.group(4) or '').strip()
+                txn = {
+                    'date': rm.group(2),
+                    'particulars': '',
+                    'chq_ref': '',
+                    'withdrawal': '',
+                    'deposit': '',
+                    'balance': '',
+                }
+                if pending is not None:
+                    # Wrapped row: columns arrived on the line above this one.
+                    self._corp_apply_amount(txn, pending)
+                    txn['particulars'] = (pending['narration'] + ' ' + rest).strip()
+                    pending = None
+                else:
+                    am = self._CORP_AMOUNT_TAIL.match(rest)
+                    if am:
+                        self._corp_apply_amount(txn, self._corp_amount_groups(am))
+                        txn['particulars'] = am.group(1).strip()
+                    else:
+                        txn['particulars'] = rest
+                transactions.append(txn)
+                current = txn
+                continue
+
+            am = self._CORP_AMOUNT_TAIL.match(line)
+            if am:
+                groups = self._corp_amount_groups(am)
+                if current is not None and not current['balance']:
+                    # Row whose amount columns arrived after its S.NO line.
+                    self._corp_apply_amount(current, groups)
+                    if groups['narration']:
+                        current['particulars'] += ' ' + groups['narration']
+                else:
+                    pending = groups
+                    current = None
+                continue
+
+            if current is not None:
+                current['particulars'] += ' ' + line
+
+        if opening_balance is not None:
+            account_info['opening_balance'] = opening_balance
+        if closing_balance is not None:
+            account_info['closing_balance'] = closing_balance
+
+        for txn in transactions:
+            txn['particulars'] = re.sub(r'\s+', ' ', txn['particulars']).strip()
+
+        return {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': period,
+            'transactions': transactions,
+        }
+
+    @staticmethod
+    def _corp_amount_groups(match) -> Dict:
+        """Unpack a _CORP_AMOUNT_TAIL match into named fields."""
+        return {
+            'narration': match.group(1).strip(),
+            'amount': match.group(2).replace(',', ''),
+            'drcr': match.group(3).upper(),
+            'balance': match.group(4).replace(',', ''),
+        }
+
+    @staticmethod
+    def _corp_apply_amount(txn: Dict, groups: Dict):
+        """Set withdrawal/deposit/balance on a row from its DR|CR columns."""
+        if groups['drcr'] == 'CR':
+            txn['deposit'] = groups['amount']
+        else:
+            txn['withdrawal'] = groups['amount']
+        txn['balance'] = groups['balance']
+
+    def _extract_corporate_account_info(self, raw_text: str) -> Dict:
+        """Extract account information from the corporate header block."""
+        info = {
+            'account_number': '',
+            'account_holder': '',
+            'branch': '',
+            'ifsc': '',
+            'type': '',
+        }
+
+        m = re.search(r'Account\s+No\s*:?\s*(\d{9,18})', raw_text)
+        if m:
+            info['account_number'] = m.group(1)
+
+        m = re.search(r'IFSC\s+Code\s*:\s*(UTIB\w+)', raw_text)
+        if m:
+            info['ifsc'] = m.group(1)
+
+        # "Scheme : CA - BUSINESS ADVANTAGE currency : INR"
+        m = re.search(r'Scheme\s*:\s*(.+?)\s+currency', raw_text, re.IGNORECASE)
+        if m:
+            info['type'] = m.group(1).strip()
+
+        # Holder: the line right before "Joint Holder", else the line after
+        # the "Account Statement Report" title.
+        lines = raw_text.split('\n')
+        for i, line in enumerate(lines):
+            if line.strip().startswith('Joint Holder') and i > 0:
+                info['account_holder'] = lines[i - 1].strip()
+                break
+        if not info['account_holder']:
+            for i, line in enumerate(lines):
+                if 'Account Statement Report' in line and i + 1 < len(lines):
+                    candidate = lines[i + 1].strip()
+                    if candidate:
+                        info['account_holder'] = candidate
+                    break
+
+        m = re.search(r'BRANCH\s+ADDRESS\s*-\s*(.+?)(?:\n|$)', raw_text)
+        if m:
+            info['branch'] = m.group(1).strip()
+
+        return info

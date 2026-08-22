@@ -65,6 +65,7 @@ Thumbs.db
 !docker-compose.yml
 !DEPLOY_VPS.md
 !tests/test_hdfc_robustness.py
+!tests/test_axis_corporate.py
 !tests/hdfc_seiza_fixture.txt
 !tests/seiza_ocr_dump.txt
 !tests/cafe_seiza_ocr_dump.txt
