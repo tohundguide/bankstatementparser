@@ -51,7 +51,13 @@ class JKBankParser(BaseBankParser):
     DETECTION_RULES = [
         (r"\bJAKA0\w{6}\b", 10, True),
         ("jkbank.com", 10, False),
+        # Newer "DETAILED ACCOUNT STATEMENT" export (no JAKA0/IFSC label on the
+        # page). Its pipe-delimited account header — "Account: <16digits>|NAME|
+        # <PRODUCT>|<branch>" — is J&K-specific and always present, so it anchors.
+        (r"Account:\s*\d{11,}\|[^|]+\|[A-Z]{2,4}\|\d{3,4}", 10, True),
+        ("Within J&K Bank", 10, False),
         ("JAMMU AND KASHMIR BANK", 3, False),
+        ("DETAILED ACCOUNT STATEMENT", 3, False),
         ("cKYC Id", 3, False),
         ("STATEMENT OF ACCOUNT FOR THE PERIOD", 1, False),
     ]
@@ -107,10 +113,13 @@ class JKBankParser(BaseBankParser):
     
     def parse(self, raw_text: str) -> Dict:
         """Parse J&K Bank statement text into structured transaction data."""
+        if self._is_detailed_format(raw_text):
+            return self._parse_detailed(raw_text)
+
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
         transactions = self._parse_transactions(raw_text)
-        
+
         return {
             'bank_name': self.BANK_NAME,
             'bank_code': self.BANK_CODE,
@@ -118,6 +127,135 @@ class JKBankParser(BaseBankParser):
             'period': period,
             'transactions': transactions,
         }
+
+    # ──────────────────────────────────────────────────────────────────
+    # "DETAILED ACCOUNT STATEMENT" format
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # A newer J&K Bank export, totally unlike the fixed-width Dr/Cr layout
+    # above. Columns:
+    #   Value Date | Transaction Date | Cheque No | Transaction Remarks |
+    #   Withdrawal(INR) | Deposit(INR) | Account Balance(INR) | Txn Ref No
+    #
+    # Every row's numbers live on ONE line (two slash-dates, then the
+    # cheque/remarks text, then the three money columns, then the ref):
+    #   26/06/2020 26/06/2020 - 484.35 0.0 99,676.05 S96199091
+    # The remark text wraps onto separate lines ABOVE (head) and BELOW
+    # (tail) that numeric line, in pdfplumber's reading order. Dates,
+    # amounts and balances are always exact; only the remark join is
+    # best-effort (head/tail attribution can occasionally misorder a
+    # wrapped fragment — it never affects a number).
+
+    _DTL_ROW = re.compile(
+        r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*?)\s+'
+        r'([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+(\S+)\s*$'
+    )
+    # A wrapped remark line is a "head" (belongs to the row below) when it
+    # opens a new narration: a POS/ref run of 5+ digits after a slash, or a
+    # known transfer keyword. Otherwise it's a "tail" of the row above
+    # (e.g. "20:25:48/SWT", "2020 11:55:15/SWT", "Y MO", "PVT LTD").
+    _DTL_HEAD = re.compile(
+        r'/\d{5,}|^(?:NEFT|RTGS|IMPS|UPI|INFT|BPAY|BY|TO|CASH|CHQ|ATM)\b',
+        re.IGNORECASE
+    )
+
+    def _is_detailed_format(self, raw_text: str) -> bool:
+        """True for the 'DETAILED ACCOUNT STATEMENT' column layout."""
+        return (
+            'Withdrawal(INR)' in raw_text
+            and 'Deposit(INR)' in raw_text
+            and 'Account Balance(INR)' in raw_text
+        )
+
+    def _dtl_skip(self, line: str) -> bool:
+        s = line.strip()
+        if s in ('No', 'Transaction Ref'):
+            return True
+        return bool(re.match(
+            r'^(DETAILED ACCOUNT STATEMENT|Account:|Transaction Date From|'
+            r'Transaction Period:|Last N Transactions:|Category:|'
+            r'Transactions List|Value Date\s+Transaction Date)',
+            s, re.IGNORECASE
+        ))
+
+    def _parse_detailed(self, raw_text: str) -> Dict:
+        account_info = self._extract_detailed_account_info(raw_text)
+        period = self._extract_detailed_period(raw_text)
+
+        transactions: List[Dict] = []
+        head_buf: List[str] = []
+        ended = False
+
+        for raw_line in raw_text.split('\n'):
+            s = raw_line.strip()
+            if not s:
+                continue
+            if re.match(r'^Legends Used', s, re.IGNORECASE):
+                ended = True
+                continue
+            if ended or self._dtl_skip(s):
+                continue
+
+            m = self._DTL_ROW.match(s)
+            if m:
+                mid = m.group(3).strip()
+                # Leading token is the Cheque No column ("-" when none)
+                if mid == '-':
+                    mid = ''
+                elif mid.startswith('- '):
+                    mid = mid[2:].strip()
+
+                def nz(v: str) -> str:
+                    v = v.replace(',', '')
+                    try:
+                        return '' if float(v) == 0 else v
+                    except ValueError:
+                        return v
+
+                transactions.append({
+                    'date': m.group(2),
+                    'particulars': ' '.join([*head_buf, mid]).strip(),
+                    'chq_ref': m.group(7),
+                    'withdrawal': nz(m.group(4)),
+                    'deposit': nz(m.group(5)),
+                    'balance': m.group(6).replace(',', ''),
+                })
+                head_buf = []
+            elif self._DTL_HEAD.search(s):
+                head_buf.append(s)
+            elif transactions:
+                transactions[-1]['particulars'] = (
+                    transactions[-1]['particulars'] + ' ' + s).strip()
+            else:
+                head_buf.append(s)
+
+        for txn in transactions:
+            txn['particulars'] = re.sub(r'\s{2,}', ' ', txn['particulars']).strip()
+
+        return {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': period,
+            'transactions': transactions,
+        }
+
+    def _extract_detailed_account_info(self, raw_text: str) -> Dict:
+        info = {'account_number': '', 'account_holder': '', 'branch': '', 'ifsc': '', 'type': ''}
+        m = re.search(r'Account:\s*(\d+)\|([^|]+)\|([^|]+)\|(\S+)', raw_text)
+        if m:
+            info['account_number'] = m.group(1)
+            info['account_holder'] = m.group(2).strip()
+            info['type'] = m.group(3).strip()
+            info['branch'] = m.group(4).strip()
+        return info
+
+    def _extract_detailed_period(self, raw_text: str) -> str:
+        m = re.search(
+            r'From:\s*\(dd/MM/yyyy\):\s*(\d{2}/\d{2}/\d{4})\s*To\s*(\d{2}/\d{2}/\d{4})',
+            raw_text, re.IGNORECASE
+        )
+        return f"{m.group(1)} to {m.group(2)}" if m else "N/A"
     
     def _extract_account_info(self, text: str) -> Dict:
         """Extract account metadata from the first page header."""
