@@ -168,6 +168,9 @@ class BaseBankParser(ABC):
         if not s:
             return None
 
+        # Every negative marker means the same thing — a debit balance — and
+        # banks stack them ("-1,04,405.00Dr" on J&K Bank statements), so they
+        # combine with OR and never cancel each other out.
         neg = False
 
         # Currency symbols / codes
@@ -176,31 +179,31 @@ class BaseBankParser(ABC):
 
         # Parenthetical negative: (25,000.00)
         if s.startswith("(") and s.endswith(")"):
-            neg = not neg
+            neg = True
             s = s[1:-1].strip()
 
         # (-) prefix
         if s.startswith("(-)"):
-            neg = not neg
+            neg = True
             s = s[3:].strip()
 
         # Prefix Dr./Cr.
         m = re.match(r"(?i)^(dr|cr)\.?\s+", s)
         if m:
             if m.group(1).lower() == "dr":
-                neg = not neg
+                neg = True
             s = s[m.end():].strip()
 
         # Suffix Dr./Cr.
         m = re.search(r"(?i)\s*(dr|cr)\.?\s*$", s)
         if m:
             if m.group(1).lower() == "dr":
-                neg = not neg
+                neg = True
             s = s[:m.start()].strip()
 
         # Leading sign
         if s.startswith("-"):
-            neg = not neg
+            neg = True
             s = s[1:].strip()
         elif s.startswith("+"):
             s = s[1:].strip()

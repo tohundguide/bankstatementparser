@@ -55,8 +55,12 @@ def _discover_parsers():
 # Counterparty IFSCs buried in NEFT/UPI narrations ("NEFT DR-SBIN0007407-...")
 # carry no such label, so anchoring detection on the *labelled* IFSC stops a
 # counterparty's code from hijacking detection to the wrong bank.
+#
+# The 5th character of an IFSC is always the digit 0; OCR'd statements
+# routinely render it as the letter O ("JAKAOMMSUM"), so accept both and
+# normalise before the anchor rules see it.
 _IFSC_LABEL_RE = re.compile(
-    r'(?:IFSC|IFS[\s.]*CODE)\b[^A-Za-z0-9]{0,4}([A-Z]{4}0[A-Z0-9]{6})',
+    r'(?:IFSC|IFS[\s.]*CODE)\b[^A-Za-z0-9]{0,4}([A-Z]{4}[0O][A-Z0-9]{5,6})\b',
     re.IGNORECASE,
 )
 
@@ -64,7 +68,10 @@ _IFSC_LABEL_RE = re.compile(
 def _own_ifsc(raw_text: str) -> Optional[str]:
     """Return the statement's own IFSC (the one following an IFSC label), or None."""
     m = _IFSC_LABEL_RE.search(raw_text or "")
-    return m.group(1).upper() if m else None
+    if not m:
+        return None
+    code = m.group(1).upper()
+    return code[:4] + '0' + code[5:]
 
 
 def _anchor_matches_ifsc(parser_class, ifsc: str) -> bool:

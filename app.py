@@ -369,6 +369,9 @@ def parse_statement():
                 'percent': round(v_pct, 1),
             },
             'parsed_by': 'ai' if used_llm else 'structured',
+            'warnings': result.get('warnings', []),
+            'notes': result.get('notes', ''),
+            'ocr_corrections': result.get('ocr_corrections', [])[:100],
             'preview': preview_rows,
         })
 
@@ -1037,7 +1040,7 @@ def status():
     ocr = check_ocr_available()
     banks = get_supported_banks()
     return jsonify({
-        'version': '2.1',
+        'version': '2.2',
         'banks': [{'code': b['code'], 'name': b['name']} for b in banks],
         'ocr': ocr,
         'llm': llm_parser.get_status(),
@@ -1081,7 +1084,7 @@ def api_status():
     ocr = check_ocr_available()
     banks = get_supported_banks()
     return jsonify({
-        'version': '2.1',
+        'version': '2.2',
         'banks': [{'code': b['code'], 'name': b['name']} for b in banks],
         'ocr': ocr,
         'llm': llm_parser.get_status(),
@@ -1454,6 +1457,8 @@ def api_parse():
                 for t in transactions
             ],
             'preview': preview_rows,
+            'warnings': result.get('warnings', []),
+            'ocr_corrections': result.get('ocr_corrections', []),
         }
 
         # Optional: generate Excel/CSV and include download link

@@ -13,6 +13,9 @@ Supports:
 import os
 import re
 import logging
+import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Limit Tesseract to 1 OpenMP thread per job.
 # Must be set BEFORE importing pytesseract or calling tesseract.
@@ -214,14 +217,22 @@ def _get_common_passwords(filepath: str) -> list:
 
 def _extract_via_ocr(filepath: str) -> str:
     """
-    Extract text from a scanned/image-based PDF using Tesseract OCR.
-    
+    Extract text from a scanned / text-less PDF with Tesseract.
+
+    Pages are rasterised at OCR_DPI (default 150 — enough for statement text;
+    300 quadruples the CPU and, measured on outline-font statements, does not
+    read digits any better) and recognised OCR_WORKERS pages at a time.
+    Tesseract itself stays single-threaded (OMP_THREAD_LIMIT=1 above), so the
+    parallelism is one process per page and CPU use is bounded by OCR_WORKERS.
+
+    Rendering uses poppler (pdf2image) when it is installed — the Docker image
+    ships it — and otherwise pypdfium2, which pdfplumber already depends on.
+    Either way a page is rendered only when its turn comes, so memory stays
+    flat for long scans instead of holding every page image at once.
+
     Requirements (all free):
-      - pytesseract: pip install pytesseract
-      - pdf2image: pip install pdf2image  
-      - Pillow: pip install Pillow
-      - Tesseract: https://github.com/UB-Mannheim/tesseract/wiki (free installer)
-      - Poppler (for pdf2image): bundled with pdf2image on Windows
+      - pytesseract + the Tesseract binary (apt: tesseract-ocr / UB-Mannheim installer)
+      - pdf2image + poppler (apt: poppler-utils)  OR  pypdfium2 (pip)
     """
     try:
         import pytesseract
@@ -229,69 +240,137 @@ def _extract_via_ocr(filepath: str) -> str:
         raise ImportError(
             "pytesseract is required for OCR. Install: pip install pytesseract"
         )
-    
-    try:
-        from pdf2image import convert_from_path
-    except ImportError:
-        raise ImportError(
-            "pdf2image is required for OCR. Install: pip install pdf2image"
+    _configure_tesseract_cmd(pytesseract)
+
+    poppler_path = _find_poppler_path()
+    use_poppler = poppler_path is not None
+    if not use_poppler and not _pdfium_available():
+        raise RuntimeError(
+            "No PDF rasteriser available: install poppler (Linux: apt install "
+            "poppler-utils; Windows: https://github.com/oschwartz10612/poppler-windows/releases "
+            "extracted to C:\\poppler) or `pip install pypdfium2`."
         )
-    
-    # Check if Tesseract is installed
-    tesseract_paths = [
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-        r'C:\Users\User\AppData\Local\Tesseract-OCR\tesseract.exe',
-    ]
-    
-    for tpath in tesseract_paths:
+
+    page_count = _page_count(filepath, poppler_path)
+    dpi = int(os.environ.get('OCR_DPI', '150'))
+    workers = max(1, min(int(os.environ.get('OCR_WORKERS', '3')), os.cpu_count() or 1, page_count))
+    logger.info(f"OCR: {page_count} page(s) at {dpi} dpi, {workers} worker(s), "
+                f"renderer={'poppler' if use_poppler else 'pdfium'}")
+
+    def ocr_page(page_no: int) -> str:
+        try:
+            if use_poppler:
+                try:
+                    img = _render_page_poppler(filepath, page_no, dpi, poppler_path)
+                except Exception as e:
+                    if not _pdfium_available():
+                        raise
+                    logger.warning(f"  poppler failed on page {page_no} ({e}); using pdfium")
+                    img = _render_page_pdfium(filepath, page_no, dpi)
+            else:
+                img = _render_page_pdfium(filepath, page_no, dpi)
+        except Exception as e:
+            raise RuntimeError(f"Could not convert PDF page {page_no} to an image: {e}")
+        try:
+            text = pytesseract.image_to_string(img, config=_OCR_CONFIG)
+        except Exception as e:
+            logger.warning(f"  OCR page {page_no} failed: {e}")
+            return ''
+        logger.info(f"  OCR page {page_no}/{page_count}: {len(text)} chars")
+        return text
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        texts = list(pool.map(ocr_page, range(1, page_count + 1)))
+
+    return '\n'.join(t for t in texts if t.strip())
+
+
+_OCR_CONFIG = r'--oem 3 --psm 6'
+_PDFIUM_LOCK = threading.Lock()   # PDFium is not thread-safe
+
+_TESSERACT_PATHS = [
+    r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+    r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+    r'C:\Users\User\AppData\Local\Tesseract-OCR\tesseract.exe',
+]
+_POPPLER_SEARCH_PATHS = [
+    r'C:\poppler\poppler-24.08.0\Library\bin',
+    r'C:\Program Files\poppler\Library\bin',
+    r'C:\Program Files\poppler-24.08.0\Library\bin',
+    r'C:\poppler\Library\bin',
+]
+
+
+def _configure_tesseract_cmd(pytesseract) -> None:
+    if shutil.which('tesseract'):
+        return
+    for tpath in _TESSERACT_PATHS:
         if os.path.exists(tpath):
             pytesseract.pytesseract.tesseract_cmd = tpath
-            break
-    
-    # Find poppler binaries (needed by pdf2image on Windows)
-    poppler_path = None
-    poppler_search_paths = [
-        r'C:\poppler\poppler-24.08.0\Library\bin',
-        r'C:\Program Files\poppler\Library\bin',
-        r'C:\Program Files\poppler-24.08.0\Library\bin',
-        r'C:\poppler\Library\bin',
-    ]
-    for pp in poppler_search_paths:
-        if os.path.exists(pp):
-            poppler_path = pp
-            break
-    
-    # Convert PDF pages to images
-    # DPI 150 is sufficient for bank statement text (was 300 — caused excessive CPU/RAM)
+            return
+
+
+def _find_poppler_path():
+    """
+    Returns: '' when pdftoppm is on PATH (pdf2image needs no path), a
+    directory when found in a known Windows location, or None when poppler
+    is not installed at all.
+    """
+    if shutil.which('pdftoppm'):
+        return ''
+    for pp in _POPPLER_SEARCH_PATHS:
+        if os.path.exists(os.path.join(pp, 'pdftoppm.exe')):
+            return pp
+    env = os.environ.get('POPPLER_PATH')
+    if env and os.path.isdir(env):
+        return env
+    return None
+
+
+def _pdfium_available() -> bool:
     try:
-        images = convert_from_path(filepath, dpi=150, poppler_path=poppler_path, grayscale=True)
-    except Exception as e:
-        # Try with even lower DPI as fallback
+        import pypdfium2  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _page_count(filepath: str, poppler_path) -> int:
+    if _pdfium_available():
+        import pypdfium2 as pdfium
+        with _PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(filepath)
+            try:
+                return len(doc)
+            finally:
+                doc.close()
+    from pdf2image.pdf2image import pdfinfo_from_path
+    return int(pdfinfo_from_path(filepath, poppler_path=poppler_path or None)['Pages'])
+
+
+def _render_page_poppler(filepath: str, page_no: int, dpi: int, poppler_path):
+    from pdf2image import convert_from_path
+    images = convert_from_path(
+        filepath, dpi=dpi, poppler_path=poppler_path or None, grayscale=True,
+        first_page=page_no, last_page=page_no,
+    )
+    return images[0]
+
+
+def _render_page_pdfium(filepath: str, page_no: int, dpi: int):
+    import pypdfium2 as pdfium
+    with _PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(filepath)
         try:
-            images = convert_from_path(filepath, dpi=100, poppler_path=poppler_path, grayscale=True)
-        except Exception:
-            raise RuntimeError(
-                f"Could not convert PDF to images: {str(e)}. "
-                f"Ensure poppler is installed. On Windows, download poppler from "
-                f"https://github.com/oschwartz10612/poppler-windows/releases "
-                f"and extract to C:\\poppler"
-            )
-    
-    # OCR each page
-    all_text = []
-    for i, img in enumerate(images):
-        try:
-            # OMP_THREAD_LIMIT=1 is set at module level to cap CPU per job.
-            custom_config = r'--oem 3 --psm 6'
-            page_text = pytesseract.image_to_string(img, config=custom_config)
-            if page_text.strip():
-                all_text.append(page_text)
-            logger.info(f"  OCR page {i+1}: {len(page_text)} chars")
-        except Exception as e:
-            logger.warning(f"  OCR page {i+1} failed: {e}")
-    
-    return '\n'.join(all_text)
+            page = doc[page_no - 1]
+            try:
+                bitmap = page.render(scale=dpi / 72, grayscale=True)
+                # to_pil() shares the bitmap buffer — copy before it is released.
+                return bitmap.to_pil().copy()
+            finally:
+                page.close()
+        finally:
+            doc.close()
 
 
 def check_ocr_available() -> dict:
@@ -299,79 +378,57 @@ def check_ocr_available() -> dict:
     Check if OCR dependencies are available.
     Returns a dict with status info.
     """
-    import shutil
-
     result = {
         'available': False,
         'pytesseract': False,
         'pdf2image': False,
+        'pdfium': False,
         'tesseract_binary': False,
         'poppler_binary': False,
         'message': ''
     }
 
     try:
-        import pytesseract
+        import pytesseract  # noqa: F401
         result['pytesseract'] = True
     except ImportError:
         pass
 
     try:
-        from pdf2image import convert_from_path
+        from pdf2image import convert_from_path  # noqa: F401
         result['pdf2image'] = True
     except ImportError:
         pass
 
-    # Check Tesseract binary
-    tesseract_paths = [
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
-    ]
+    result['pdfium'] = _pdfium_available()
 
-    for tpath in tesseract_paths:
-        if os.path.exists(tpath):
-            result['tesseract_binary'] = True
-            break
-
-    # Also check if it's in PATH
-    if not result['tesseract_binary']:
-        if shutil.which('tesseract'):
-            result['tesseract_binary'] = True
-
-    # Check Poppler (pdftoppm/pdfinfo) — pdf2image shells out to it. Without this,
-    # OCR fails at PDF->image conversion even though the Python imports succeed.
-    # This is the common silent failure on a fresh Linux VPS (apt: poppler-utils).
-    if shutil.which('pdftoppm') or shutil.which('pdfinfo'):
-        result['poppler_binary'] = True
+    # Tesseract binary: PATH first (Linux), then the known Windows installs
+    if shutil.which('tesseract'):
+        result['tesseract_binary'] = True
     else:
-        poppler_search_paths = [
-            r'C:\poppler\poppler-24.08.0\Library\bin',
-            r'C:\Program Files\poppler\Library\bin',
-            r'C:\Program Files\poppler-24.08.0\Library\bin',
-            r'C:\poppler\Library\bin',
-        ]
-        for pp in poppler_search_paths:
-            if os.path.exists(os.path.join(pp, 'pdftoppm.exe')):
-                result['poppler_binary'] = True
+        for tpath in _TESSERACT_PATHS:
+            if os.path.exists(tpath):
+                result['tesseract_binary'] = True
                 break
 
-    result['available'] = all([
-        result['pytesseract'], result['pdf2image'],
-        result['tesseract_binary'], result['poppler_binary'],
-    ])
+    # Poppler (pdftoppm/pdfinfo) — pdf2image shells out to it. On a fresh
+    # Linux VPS this is the common silent failure (apt: poppler-utils).
+    result['poppler_binary'] = _find_poppler_path() is not None
+
+    rasteriser_ok = (result['pdf2image'] and result['poppler_binary']) or result['pdfium']
+    result['available'] = all([result['pytesseract'], result['tesseract_binary'], rasteriser_ok])
 
     if result['available']:
-        result['message'] = 'OCR is fully available (Tesseract + Poppler + pdf2image)'
+        via = 'Poppler' if (result['pdf2image'] and result['poppler_binary']) else 'pypdfium2'
+        result['message'] = f'OCR is fully available (Tesseract + {via})'
     else:
         missing = []
         if not result['pytesseract']:
             missing.append('pip install pytesseract')
-        if not result['pdf2image']:
-            missing.append('pip install pdf2image Pillow')
         if not result['tesseract_binary']:
             missing.append('Install Tesseract (Linux: apt install tesseract-ocr)')
-        if not result['poppler_binary']:
-            missing.append('Install Poppler (Linux: apt install poppler-utils)')
+        if not rasteriser_ok:
+            missing.append('Install Poppler (Linux: apt install poppler-utils) or pip install pypdfium2')
         result['message'] = 'Missing: ' + ', '.join(missing)
 
     return result

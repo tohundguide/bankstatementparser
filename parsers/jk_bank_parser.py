@@ -31,7 +31,7 @@ Format characteristics:
 """
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from parsers.base_parser import BaseBankParser
 
 
@@ -49,8 +49,13 @@ class JKBankParser(BaseBankParser):
         "STATEMENT OF ACCOUNT FOR THE PERIOD",
     ]
     DETECTION_RULES = [
-        (r"\bJAKA0\w{6}\b", 10, True),
+        (r"\bJAKA0\w{5,6}\b", 10, True),
+        # OCR'd statements: Tesseract reads the "0" in JAKA0… as a letter O.
+        (r"\bJAKA[0O][A-Z0-9]{5,6}\b", 10, True),
         ("jkbank.com", 10, False),
+        # Column header of the branch-printed "STATEMENT OF ACCOUNT FOR THE
+        # PERIOD FROM … TO …" layout (punctuation optional — OCR adds dots).
+        (r"DATE\s+PARTICULARS[.:]?\s+CHQ[.:]?\s*NO[.:]?\s+WITHDRAWALS[.:]?\s+DEPOSITS[.:]?\s+BALANCE", 3, True),
         # Newer "DETAILED ACCOUNT STATEMENT" export (no JAKA0/IFSC label on the
         # page). Its pipe-delimited account header — "Account: <16digits>|NAME|
         # <PRODUCT>|<branch>" — is J&K-specific and always present, so it anchors.
@@ -115,10 +120,19 @@ class JKBankParser(BaseBankParser):
         """Parse J&K Bank statement text into structured transaction data."""
         if self._is_detailed_format(raw_text):
             return self._parse_detailed(raw_text)
+        if self._is_period_format(raw_text):
+            return self._parse_period(raw_text)
 
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
         transactions = self._parse_transactions(raw_text)
+
+        if not transactions:
+            # Fixed-width parser found nothing — the text may be an OCR'd
+            # branch statement whose header did not survive recognition.
+            alt = self._parse_period(raw_text)
+            if alt['transactions']:
+                return alt
 
         return {
             'bank_name': self.BANK_NAME,
@@ -257,6 +271,351 @@ class JKBankParser(BaseBankParser):
         )
         return f"{m.group(1)} to {m.group(2)}" if m else "N/A"
     
+    # ──────────────────────────────────────────────────────────────────
+    # "STATEMENT OF ACCOUNT FOR THE PERIOD FROM … TO …" format
+    # ──────────────────────────────────────────────────────────────────
+    #
+    # The branch-printed Current / Cash-Credit account statement. Each page
+    # repeats a header (IFSC, branch, customer block) and the column header
+    #   DATE | PARTICULARS | CHQ.NO. | WITHDRAWALS | DEPOSITS | BALANCE
+    # then rows, a "Page Total :" line, and finally "Grand Total :".
+    # Every row is one line with ONE amount (withdrawal OR deposit) and a
+    # Dr/Cr balance:
+    #
+    #   09-10-2025 mTFR/9419034560/INFINITY CLOTHING 33,918.00 -33,911.00Dr
+    #
+    # Which column the amount sat in is not recoverable from the text, so
+    # direction is derived from the running balance. Long narrations wrap
+    # onto a second line; when the amounts are printed between the two
+    # lines, OCR may attach them to the continuation line instead.
+    #
+    # These statements frequently arrive re-printed through "Microsoft Print
+    # to PDF", which turns the text into vector outlines — no text layer —
+    # so the text comes from Tesseract with its usual damage: a leading "1"
+    # read as "4" (1,400 -> 41,400), "," and "." swapped, "-" read as "~",
+    # the "0" in the IFSC read as "O", duplicated digit fragments on the
+    # wrapped line. Nothing here trusts column position or a single number:
+    # amounts and balances are settled against each other by
+    # parsers/ocr_reconcile.py, and every change is reported.
+
+    _PRD_HDR_RE = re.compile(r'STATEMENT OF ACCOUNT FOR THE PERIOD FROM', re.IGNORECASE)
+    _PRD_DATE_RE = re.compile(r'^(\d{2}-\d{2}-\d{4})\b[\s:.,]*(.*)$')
+    # Dr/Cr as OCR renders them: Dr, DR, Or, 0r, De, Dc, D¢, DF, Cr, CR, Ce …
+    _PRD_BAL_RE = re.compile(
+        r'([-~—–_"“”\'`]?\s?\d[\d,.]*[.,:]\d{2})\s*'
+        r'(Dr|DR|Or|0r|D[a-z¢€£]|Cr|CR|C[a-z])\b\.?\s*$'
+    )
+    # Any money-looking token; used when the Dr/Cr suffix did not survive OCR.
+    _PRD_MONEYISH_RE = re.compile(r'[-~—–_"“”\'`]?\s?\d[\d,.]*[.,:]\d{2}')
+    _PRD_TRAIL_RE = re.compile(r'([-~—–_"“”\'`]?\s?\d[\d,.]*[.,:]\d{2})\s*(\S{0,4})\s*$')
+    _PRD_AMT_RE = re.compile(r'(?<![\d/:])\d{1,3}(?:[,.]\d{2,3})*[.,]\d{2}(?![\d/])')
+    _PRD_BLOCK_START_RE = re.compile(r'^(IFSC\b|Page\s*Total\b)', re.IGNORECASE)
+    _PRD_COLHDR_RE = re.compile(r'DATE\s+PARTICULARS', re.IGNORECASE)
+    _PRD_GRAND_RE = re.compile(r'^Grand\s*Total\b', re.IGNORECASE)
+    _PRD_SKIP_RE = re.compile(
+        r'(CUSTOMER\s*ID|A[/I1|\\]?C\s*NO|^TYPE\s*:|^PIN\s*:|CURRENCY\s*CODE|@|'
+        r'STATEMENT OF ACCOUNT|^Page\s+\S+\s*(of|0f)\b|system generated|'
+        r'^Date/Time|JAMMU AND KASHMIR|^[SDW$]/O\b|^C/A\b|PAGE\s*:\s*\d|'
+        r'^[^A-Za-z0-9]*$)',
+        re.IGNORECASE
+    )
+    _PRD_CHQ_RE = re.compile(r'\s(\d{6})$')
+
+    def _is_period_format(self, raw_text: str) -> bool:
+        return bool(self._PRD_HDR_RE.search(raw_text))
+
+    @staticmethod
+    def _prd_money(tok: str) -> Optional[float]:
+        """'1,04,405.00' / '4,00' / '1.59,465.74' -> float; the last two digits are paise."""
+        d = ''.join(ch for ch in tok if ch.isdigit())
+        if len(d) < 3:
+            return None
+        return float(d[:-2] + '.' + d[-2:])
+
+    @staticmethod
+    def _prd_pick_amount(matches):
+        """Among amount-looking tokens on a line, the transaction amount is the
+        one that looks most like money: a proper '.dd' decimal beats a comma
+        decimal, more digits beat fewer, and later beats earlier (nearest the
+        balance column). Guards against fragments of a garbled balance such as
+        the '4,49' inside '4,49,327:7408'."""
+        def score(item):
+            idx, m = item
+            tok = m.group(0)
+            digits = sum(ch.isdigit() for ch in tok)
+            return (2 if tok[-3] == '.' else 0) + (1 if digits >= 3 else 0), idx
+        return max(enumerate(matches), key=score)[1]
+
+    def _prd_balance(self, bm) -> Optional[float]:
+        val = self._prd_money(bm.group(1))
+        if val is None:
+            return None
+        neg = bm.group(2).upper()[0] in 'DO0'
+        self._prd_last_neg = neg
+        return -val if neg else val
+
+    def _prd_trailing_balance(self, text: str):
+        """When no Dr/Cr suffix survived, the last money-looking token on a line
+        that carries at least two of them is the balance. Its sign comes from a
+        leading minus, from whatever junk follows it (D… / C…), else from the
+        last balance seen — an overdrawn account stays overdrawn."""
+        if len(self._PRD_MONEYISH_RE.findall(text)) < 2:
+            return None
+        m = self._PRD_TRAIL_RE.search(text)
+        if not m:
+            return None
+        tok, junk = m.group(1).strip(), m.group(2)
+        val = self._prd_money(tok)
+        if val is None:
+            return None
+        if tok[0] in '-~—–_"“”\'`' or junk[:1].upper() in ('D', 'O', '0'):
+            neg = True
+        elif junk[:1].upper() == 'C':
+            neg = False
+        else:
+            neg = self._prd_last_neg
+        return m, tok, (-val if neg else val)
+
+    def _prd_take_numbers(self, row: Dict, text: str, primary: bool) -> None:
+        """Pull the balance / amount out of a row line (or its continuation) and
+        append what is left to the narration."""
+        bm = self._PRD_BAL_RE.search(text)
+        if bm:
+            if row['balance'] is None:
+                row['balance_raw'] = bm.group(1).strip()
+                row['balance'] = self._prd_balance(bm)
+            # (a balance seen again on a continuation line is a duplicated fragment)
+            text = text[:bm.start()]
+        elif row['balance'] is None:
+            tb = self._prd_trailing_balance(text)
+            if tb:
+                m, tok, val = tb
+                row['balance_raw'] = tok
+                row['balance'] = val
+                text = text[:m.start()]
+
+        amts = list(self._PRD_AMT_RE.finditer(text))
+        if amts and row['amount'] is None:
+            m = self._prd_pick_amount(amts)
+            row['amount_raw'] = m.group(0)
+            row['amount'] = self._prd_money(m.group(0))
+            # Narration always precedes the amount; whatever follows it is a
+            # garbled balance or duplicated digit fragments.
+            text = text[:m.start()]
+        else:
+            text = self._PRD_AMT_RE.sub(' ', text)
+
+        if not primary:
+            # Wrapped-line debris: OCR re-reads half-height digit fragments of
+            # the amounts ("000. 14,205."); real wrapped narration is
+            # upper-case words, slashes or digit runs (phone / ref numbers).
+            keep = []
+            for tok in text.split():
+                core = tok.strip('.,:;-_|')
+                if not core:
+                    continue
+                if '/' in core or re.fullmatch(r"[A-Z][A-Z0-9&.'-]*", core) \
+                        or re.fullmatch(r"\d+-\d+", core):
+                    keep.append(tok)
+            text = ' '.join(keep)
+
+        text = re.sub(r'\s{2,}', ' ', text).strip(' .,:;-_|')
+        if text:
+            row['particulars'] = (row['particulars'] + ' ' + text).strip()
+
+    def _prd_page_totals(self, line: str) -> Optional[Tuple[float, float]]:
+        """'Page Total : 123,178.00 18,773.00 -1,04,405.00Dr' -> (withdrawals, deposits);
+        None when a column is blank (one amount only — cannot tell which)."""
+        text = line
+        bm = self._PRD_BAL_RE.search(text)
+        if bm:
+            text = text[:bm.start()]
+        vals = [v for v in (self._prd_money(t) for t in self._PRD_AMT_RE.findall(text)) if v is not None]
+        return (vals[0], vals[1]) if len(vals) == 2 else None
+
+    def _prd_direction_guess(self, particulars: str, amount: float, balance: float) -> str:
+        """Direction for a row the balance chain cannot settle (the first row)."""
+        p = particulars.upper()
+        if '/CR/' in p or p.startswith('BY ') or 'CREDIT' in p:
+            return 'deposit'
+        if any(k in p for k in ('INT.COLL', 'CHARGES', 'SMS ', '/DR/', ' FEE', 'GST')):
+            return 'withdrawal'
+        if balance > 0 and abs(balance - amount) <= 0.011:
+            return 'deposit'          # first credit into a fresh account
+        if balance < 0 and abs(-balance - amount) <= 0.011:
+            return 'withdrawal'
+        return 'withdrawal' if balance < 0 else 'deposit'
+
+    def _parse_period(self, raw_text: str) -> Dict:
+        from parsers.ocr_reconcile import reconcile
+
+        account_info = self._extract_period_account_info(raw_text)
+        period = self._extract_period_range(raw_text)
+
+        rows: List[Dict] = []
+        current: Optional[Dict] = None
+        in_block = True        # inside a page header/footer: nothing is narration
+        grand: List[float] = []
+        page, page_has_rows = 0, False
+        page_totals: Dict[int, Tuple[float, float]] = {}
+        self._prd_last_neg = False
+
+        for raw_line in raw_text.split('\n'):
+            s = raw_line.strip()
+            if not s:
+                continue
+            if self._PRD_GRAND_RE.match(s):
+                grand = [v for v in (self._prd_money(t) for t in self._PRD_AMT_RE.findall(s)) if v is not None]
+                current, in_block = None, True
+                continue
+            if self._PRD_BLOCK_START_RE.match(s):
+                current, in_block = None, True
+                if s.upper().startswith('PAGE'):
+                    totals = self._prd_page_totals(s)
+                    if totals:
+                        page_totals[page] = totals
+                elif page_has_rows:          # next page's header block
+                    page, page_has_rows = page + 1, False
+                continue
+            if self._PRD_COLHDR_RE.search(s):
+                current, in_block = None, False
+                if page_has_rows:            # header survived but IFSC line did not
+                    page, page_has_rows = page + 1, False
+                continue
+            dm = self._PRD_DATE_RE.match(s)
+            if dm:
+                in_block = False
+                current = {
+                    'date': dm.group(1), 'particulars': '', 'chq_ref': '',
+                    'amount': None, 'amount_raw': None,
+                    'balance': None, 'balance_raw': None, 'page': page,
+                }
+                self._prd_take_numbers(current, dm.group(2), primary=True)
+                rows.append(current)
+                page_has_rows = True
+                continue
+            if in_block or current is None or self._PRD_SKIP_RE.search(s):
+                continue
+            self._prd_take_numbers(current, s, primary=False)
+
+        rec = reconcile([
+            {k: r[k] for k in ('amount', 'amount_raw', 'balance', 'balance_raw', 'page')}
+            for r in rows
+        ], page_totals)
+
+        transactions: List[Dict] = []
+        corrections: List[Dict] = []
+        total_w = total_d = 0.0
+        for idx, (row, rc) in enumerate(zip(rows, rec)):
+            particulars = re.sub(r'\s{2,}', ' ', row['particulars']).strip()
+            chq = ''
+            cm = self._PRD_CHQ_RE.search(particulars)
+            if cm:
+                chq = cm.group(1)
+                particulars = particulars[:cm.start()].strip()
+
+            amount, balance = rc['amount'], rc['balance']
+            direction = rc['direction'] or self._prd_direction_guess(particulars, amount, balance)
+            amt_s = f"{amount:.2f}" if amount > 0.011 else ''
+            withdrawal = amt_s if direction == 'withdrawal' else ''
+            deposit = amt_s if direction == 'deposit' else ''
+            total_w += float(withdrawal or 0)
+            total_d += float(deposit or 0)
+
+            transactions.append({
+                'date': row['date'],
+                'particulars': particulars,
+                'chq_ref': chq,
+                'withdrawal': withdrawal,
+                'deposit': deposit,
+                'balance': f"{balance:.2f}",
+            })
+            for field, read, used in rc['corrections']:
+                corrections.append({
+                    'row': idx + 1, 'date': row['date'], 'field': field,
+                    'read': read, 'used': used, 'particulars': particulars[:40],
+                })
+
+        warnings: List[str] = []
+        if corrections:
+            warnings.append(
+                f"{len(corrections)} value(s) could not be read cleanly from the scan "
+                f"and were reconciled against the running balance"
+            )
+        if len(grand) >= 3:
+            gw, gd = grand[0], grand[1]
+            if abs(gw - total_w) > 0.011 or abs(gd - total_d) > 0.011:
+                warnings.append(
+                    f"Grand Total printed on the statement (withdrawals {gw:,.2f}, deposits "
+                    f"{gd:,.2f}) differs from the parsed totals (withdrawals "
+                    f"{total_w:,.2f}, deposits {total_d:,.2f}) — review the flagged rows"
+                )
+
+        result = {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': period,
+            'transactions': transactions,
+        }
+        if corrections:
+            result['ocr_corrections'] = corrections
+        if warnings:
+            result['warnings'] = warnings
+            result['notes'] = '; '.join(warnings)
+        return result
+
+    def _extract_period_account_info(self, raw_text: str) -> Dict:
+        info = {
+            'account_number': '', 'account_holder': '', 'branch': '',
+            'ifsc': '', 'type': '', 'customer_id': '',
+        }
+        lines = [l.strip() for l in raw_text.split('\n')]
+        head = lines[:60]
+        for idx, l in enumerate(head):
+            if not info['ifsc']:
+                m = re.search(r'IFSC\s*:?\s*\|?\s*([A-Z0-9]{10,11})\b', l, re.IGNORECASE)
+                if m:
+                    code = m.group(1).upper()
+                    if code[4] == 'O':
+                        code = code[:4] + '0' + code[5:]     # OCR: letter O for zero
+                    info['ifsc'] = code
+                    for nl in head[idx + 1: idx + 4]:
+                        if nl and re.search(r'[A-Za-z]{3}', nl) and \
+                                not re.match(r'^(M/?S\b|MR\b|MRS\b|SHRI\b|SMT\b)', nl, re.IGNORECASE):
+                            info['branch'] = nl
+                            break
+            if not info['account_number']:
+                m = re.search(r'A[/I1|\\]?C\s*NO\s*:?\s*(\d{10,20})', l, re.IGNORECASE)
+                if m:
+                    info['account_number'] = m.group(1)
+            if not info['customer_id']:
+                m = re.search(r'CUSTOMER\s*ID\s*:?\s*(\d{4,})', l, re.IGNORECASE)
+                if m:
+                    info['customer_id'] = m.group(1)
+            if not info['type']:
+                m = re.match(r'^TYPE\s*:\s*(.+)$', l, re.IGNORECASE)
+                if m and 'DATE' not in m.group(1).upper():
+                    info['type'] = m.group(1).strip()
+            if not info['account_holder']:
+                if re.match(r'^(M/?S\.?|MR\.?|MRS\.?|SHRI|SMT|DR\.?)\s+\S', l, re.IGNORECASE):
+                    info['account_holder'] = re.split(r'\s+DATE\s*:', l, flags=re.IGNORECASE)[0].strip()
+        if not info['account_holder']:
+            for idx, l in enumerate(head):
+                if re.match(r'^[SDW$]/O\b', l, re.IGNORECASE) and idx > 0:
+                    prev = next((p for p in reversed(head[:idx]) if p), '')
+                    if prev and not re.match(r'^(IFSC|Main)', prev, re.IGNORECASE):
+                        info['account_holder'] = prev
+                    break
+        return info
+
+    def _extract_period_range(self, raw_text: str) -> str:
+        m = re.search(
+            r'PERIOD\s+FROM\s*(\d{2}-\d{2}-\d{4})\s*TO\s*(\d{2}-\d{2}-\d{4})',
+            raw_text, re.IGNORECASE
+        )
+        return f"{m.group(1)} to {m.group(2)}" if m else "N/A"
+
     def _extract_account_info(self, text: str) -> Dict:
         """Extract account metadata from the first page header."""
         info = {

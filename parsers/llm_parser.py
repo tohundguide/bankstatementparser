@@ -257,7 +257,10 @@ def parse_with_llm(raw_text: str) -> Optional[Dict]:
             }
         }
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={_GEMINI_KEY}"
+        # gemini-2.0-flash was retired (the API answers 404 for it), which
+        # silently disabled this fallback for every unknown format.
+        model = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_GEMINI_KEY}"
         
         req = urllib.request.Request(
             url,

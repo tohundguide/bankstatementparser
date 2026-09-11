@@ -198,6 +198,9 @@ def _create_transaction_sheet(wb: Workbook, result: Dict):
         ('Total Transactions:', str(len(result.get('transactions', [])))),
     ]
     
+    if result.get('notes'):
+        info_items.append(('Notes:', result['notes']))
+
     for label, value in info_items:
         ws.cell(row=row, column=1, value=label).font = Font(name='Calibri', bold=True, size=9, color='555555')
         ws.cell(row=row, column=2, value=value).font = Font(name='Calibri', size=9, color='333333')
