@@ -152,136 +152,124 @@ class IDFCFirstBankParser(BaseBankParser):
             re.IGNORECASE
         )
 
+        # Column header. pdfplumber emits it on one line
+        # ("Transaction Value Date Particulars Cheque Debit Credit Balance")
+        # or, when the header cells wrap, as three lines:
+        #   "Transaction Cheque" / "Value Date Particulars Debit Credit Balance" / "Date No"
+        # Requiring the one-line form gave every wrapped-header statement
+        # 0 transactions, so match the line that carries the column names.
+        header_re = re.compile(r'Value\s+Date\s+Particulars\b.*\bBalance\b', re.IGNORECASE)
+        header_fragment_re = re.compile(
+            r'^\s*(Transaction(\s+Cheque)?|Date(\s+No)?|Cheque(\s+No)?)\s*$', re.IGNORECASE
+        )
+
+        # Where a narration STARTS. The date/amount row is vertically centred
+        # in its table cell, so a wrapped narration has lines ABOVE the date
+        # line as well as below it:
+        #     UPI/CR/525170555819/                         <- start (above)
+        #     08-Sep-2025 08-Sep-2025 MAHIPAL /PUNB/ 1.00 50,001.00
+        #     wegyane/UPI                                  <- tail (below)
+        # The lines between two date rows are therefore split: those before
+        # the first narration-start line finish the previous transaction, the
+        # rest open the next one.
+        narration_start_re = re.compile(
+            r'^(UPI/|NEFT/|IMPS|RTGS/|BB/|IFT/|MMT/|ACH/|NACH|ECS/|CASH\s|ATM[/\s]|POS[/\s]|'
+            r'MB/|IB/|INT\.?\s|INTEREST\b|CHRG|CHG/|CHARGES\b|SI/|TPT/|FT/|CLG\b|CHQ\b|'
+            r'CHEQUE\b|REV[:/\s]|REVERSAL\b|TRF/|SWEEP\b|GST\b|TDS\b|BIL/|DEBIT\s+CARD\b)',
+            re.IGNORECASE,
+        )
+
+        pending: List[str] = []   # lines seen since the last date row
+
+        def attach(txn: Dict, extra: List[str]) -> None:
+            for text in extra:
+                # A row whose amounts wrapped below its date line.
+                if not txn['balance']:
+                    ab2 = amounts_2_re.search(text)
+                    if ab2:
+                        self._set_amounts(txn, ab2.group(1), ab2.group(2), transactions, raw_text)
+                        text = text[:ab2.start()].strip()
+                if text:
+                    txn['particulars'] += ' ' + text
+
         for line in lines:
             stripped = line.strip()
             if not stripped:
                 continue
 
-            # Check for end of statement
-            if re.match(r'^\s*-{3,}\s*End\s+of\s+the\s+statement', stripped, re.IGNORECASE):
-                if current_txn:
-                    transactions.append(current_txn)
-                    current_txn = None
-                in_transactions = False
-                continue
-
-            # Section terminators always flush and stop
+            # Section terminators (page footer, disclaimers, end marker) stop
+            # reading until the next page's column header. Pending lines are
+            # KEPT: a narration can continue at the top of the next page
+            # ("NIKHIL YALLUSA" / "BAKALE/BARB0G" before that page's first row).
             if section_terminators.match(stripped):
-                if current_txn:
-                    transactions.append(current_txn)
-                    current_txn = None
                 in_transactions = False
                 continue
 
-            # Detect start of transaction section via column header
-            if re.match(r'^\s*Transaction\s+Value\s+Date\s+Particulars', stripped, re.IGNORECASE):
+            if header_re.search(stripped):
                 in_transactions = True
                 continue
 
-            # Skip "Date No" sub-header
-            if re.match(r'^\s*Date\s+No\s*$', stripped, re.IGNORECASE):
+            if header_fragment_re.match(stripped):
                 continue
 
-            # Opening Balance marker row
-            ob_m = opening_bal_re.match(stripped)
-            if ob_m:
-                # This is just the opening balance marker, not a transaction
+            # Opening Balance marker row (not a transaction; rows follow it)
+            if opening_bal_re.match(stripped):
+                in_transactions = True
                 continue
 
-            # Skip page markers
             if re.match(r'^\s*Page\s+\d+\s+of\s+\d+', stripped, re.IGNORECASE):
                 continue
 
             if not in_transactions:
-                # Skip header patterns when not in transaction section
-                is_skip = False
-                for pat in skip_patterns:
-                    if re.match(pat, stripped, re.IGNORECASE):
-                        is_skip = True
-                        break
-                if is_skip:
-                    continue
                 continue
 
-            # Try to match a transaction line
             m = txn_line_re.match(stripped)
-            if m:
-                # Save previous transaction
-                if current_txn:
-                    transactions.append(current_txn)
-
-                txn_date_str = m.group(1)    # "24-Jun-2025"
-                # val_date_str = m.group(2)  # "24-Jun-2025" (not stored)
-                rest = m.group(3).strip()
-
-                withdrawal = ''
-                deposit = ''
-                balance = ''
-                chq_ref = ''
-                narration = rest
-
-                # Extract amounts from end of line
-                ab = amounts_2_re.search(rest)
-                if ab:
-                    amount = ab.group(1).replace(',', '')
-                    balance = ab.group(2).replace(',', '')
-                    narration_part = rest[:ab.start()].strip()
-
-                    # Determine W vs D by comparing balance to previous
-                    prev_bal = self._get_prev_balance(transactions)
-                    curr_bal = float(balance)
-
-                    if prev_bal is not None:
-                        if curr_bal > prev_bal:
-                            deposit = amount
-                        else:
-                            withdrawal = amount
-                    else:
-                        # First transaction — try to infer from opening balance in header
-                        ob_match = re.search(
-                            r'Opening\s+Balance\s+([\d,]+\.\d{2})',
-                            raw_text, re.IGNORECASE
-                        )
-                        if ob_match:
-                            opening_bal = float(ob_match.group(1).replace(',', ''))
-                            if curr_bal > opening_bal:
-                                deposit = amount
-                            else:
-                                withdrawal = amount
-                        else:
-                            withdrawal = amount
-
-                    # Check if there's a cheque number in the narration
-                    # Cheque numbers are typically standalone numeric sequences
-                    ref_m = re.match(r'(.+?)\s+(\d{6,})\s*$', narration_part)
-                    if ref_m:
-                        narration = ref_m.group(1).strip()
-                        chq_ref = ref_m.group(2)
-                    else:
-                        narration = narration_part
-
-                else:
-                    # No amounts found — rest might just be the narration start
-                    narration = rest
-
-                date_normalized = self._normalize_date(txn_date_str)
-
-                current_txn = {
-                    'date': date_normalized,
-                    'particulars': narration,
-                    'chq_ref': chq_ref,
-                    'withdrawal': withdrawal,
-                    'deposit': deposit,
-                    'balance': balance,
-                }
+            if not m:
+                pending.append(stripped)
                 continue
 
-            # Continuation line (multi-line narration, no date prefix)
+            # A date row: split what came before it between the previous
+            # transaction's tail and this one's head.
+            split = next((k for k, t in enumerate(pending) if narration_start_re.match(t)), None)
+            if current_txn is None:
+                head, tail = pending, []
+            elif split is None:
+                head, tail = [], pending
+            else:
+                head, tail = pending[split:], pending[:split]
             if current_txn:
-                current_txn['particulars'] += ' ' + stripped
+                attach(current_txn, tail)
+                transactions.append(current_txn)
+            pending = []
+
+            rest = m.group(3).strip()
+            current_txn = {
+                'date': self._normalize_date(m.group(1)),
+                'particulars': '',
+                'chq_ref': '',
+                'withdrawal': '',
+                'deposit': '',
+                'balance': '',
+            }
+
+            narration = rest
+            ab = amounts_2_re.search(rest)
+            if ab:
+                self._set_amounts(current_txn, ab.group(1), ab.group(2), transactions, raw_text)
+                narration = rest[:ab.start()].strip()
+                # Cheque numbers sit just before the amounts ("... 000048 50,000.00 ...")
+                # It is its own token: a UPI reference glued to a slash
+                # ("UPI/CR/525170555819") is narration, not a cheque number.
+                ref_m = re.match(r'^(?:(.*?)\s+)?(\d{6,})\s*$', narration)
+                if ref_m:
+                    narration = (ref_m.group(1) or '').strip()
+                    current_txn['chq_ref'] = ref_m.group(2)
+
+            current_txn['particulars'] = ' '.join(head + ([narration] if narration else []))
 
         # Don't forget last transaction
         if current_txn:
+            attach(current_txn, pending)
             transactions.append(current_txn)
 
         # Clean up narrations
@@ -295,6 +283,22 @@ class IDFCFirstBankParser(BaseBankParser):
             'period': period,
             'transactions': transactions,
         }
+
+    def _set_amounts(self, txn: Dict, amount_s: str, balance_s: str,
+                     transactions: List[Dict], raw_text: str) -> None:
+        """Fill amount + balance; debit vs credit comes from the balance movement."""
+        amount = amount_s.replace(',', '')
+        balance = balance_s.replace(',', '')
+        txn['balance'] = balance
+        prev_bal = self._get_prev_balance(transactions)
+        if prev_bal is None:
+            # First transaction: compare with the "Opening Balance" marker.
+            ob = re.search(r'Opening\s+Balance\s+([\d,]+\.\d{2})', raw_text, re.IGNORECASE)
+            prev_bal = float(ob.group(1).replace(',', '')) if ob else None
+        if prev_bal is not None and float(balance) > prev_bal:
+            txn['deposit'] = amount
+        else:
+            txn['withdrawal'] = amount
 
     def _get_prev_balance(self, transactions: List[Dict]) -> Optional[float]:
         """Get the numeric balance from the last transaction."""
