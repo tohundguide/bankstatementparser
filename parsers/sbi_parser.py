@@ -56,8 +56,95 @@ class SBIParser(BaseBankParser):
         'Brought Forward', 'Dr Count', 'Cr Count',
     ]
 
+    # ── Internet-banking / YONO layout ────────────────────────────────
+    #   Account Name :  ...          Opening Balance as on 1 Apr 2025 : 5,856.33
+    #   Txn Date Value Date Description Ref No./Cheque Branch Debit Credit Balance
+    #   No. Code
+    #   23/05/2025 23/05/2025 TO TRANSFER- NEFT INB: 99922 903.00 4,953.33
+    #   INB NEFT UTR NO: CNADPPTAS5            <- description + ref columns, wrapped
+    # One line per row: DD/MM/YYYY dates, branch code, ONE amount, balance.
+    # The Finacle path below only recognises DD-MM-YYYY date lines, so this
+    # layout produced 0 rows.
+    INB_HEADER_RE = re.compile(r'Txn\s+Date\s+Value\s+Date\s+Description\s+Ref\s+No', re.IGNORECASE)
+    INB_ROW_RE = re.compile(
+        r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*?)\s*(?<!\S)(\d{1,6})\s+'
+        r'(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$'
+    )
+
+    def _is_inb_format(self, raw_text: str) -> bool:
+        return bool(self.INB_HEADER_RE.search(raw_text)) or \
+            sum(1 for l in raw_text.split('\n') if self.INB_ROW_RE.match(l.strip())) >= 2
+
+    def _parse_inb_format(self, raw_text: str) -> Dict:
+        def field(label: str) -> str:
+            m = re.search(label + r'\s*:\s*(?:\(cid:\d+\))?\s*(.+)', raw_text, re.IGNORECASE)
+            return m.group(1).strip() if m else ''
+
+        ob = re.search(r'Opening\s+Balance\s+as\s+on\s+[^:]*:\s*(?:\(cid:\d+\))?\s*(-?[\d,]+\.\d{2})',
+                       raw_text, re.IGNORECASE)
+        opening = float(ob.group(1).replace(',', '')) if ob else None
+        per = re.search(r'Account\s+Statement\s+from\s+(.+?)\s+to\s+(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
+        account_info = {
+            'account_number': field(r'Account\s+Number'),
+            'account_holder': field(r'Account\s+Name'),
+            'branch': field(r'Branch'),
+            'ifsc': field(r'IFS\s*C(?:ode)?'),
+            'type': field(r'Account\s+Description'),
+            'opening_balance': f"{opening:.2f}" if opening is not None else '',
+            'closing_balance': '',
+        }
+
+        skip_re = re.compile(r'^(Txn\s+Date\b|No\.\s+Code\s*$|.*computer\s+generated\s+statement)', re.IGNORECASE)
+        transactions: List[Dict] = []
+        txn: Optional[Dict] = None
+        prev_bal = opening
+        started = False
+        for line in raw_text.split('\n'):
+            s = line.replace('(cid:9)', ' ').strip()
+            if not s:
+                continue
+            if self.INB_HEADER_RE.search(s):
+                started = True
+                continue
+            if not started or skip_re.match(s):
+                continue
+            m = self.INB_ROW_RE.match(s)
+            if m:
+                if txn:
+                    transactions.append(txn)
+                amount = m.group(5).replace(',', '').lstrip('-')
+                balance = float(m.group(6).replace(',', ''))
+                txn = {'date': m.group(1).replace('/', '-'), 'particulars': m.group(3),
+                       'chq_ref': '', 'withdrawal': '', 'deposit': '', 'balance': f"{balance:.2f}"}
+                # One amount column per row; its side follows from the balance.
+                if prev_bal is not None and balance > prev_bal + 1e-9:
+                    txn['deposit'] = amount
+                else:
+                    txn['withdrawal'] = amount
+                prev_bal = balance
+                continue
+            if txn:
+                txn['particulars'] += ' ' + s
+        if txn:
+            transactions.append(txn)
+        for t in transactions:
+            t['particulars'] = re.sub(r'\s+', ' ', t['particulars']).strip()
+        if transactions:
+            account_info['closing_balance'] = transactions[-1]['balance']
+
+        return {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': f"{per.group(1)} to {per.group(2)}" if per else 'N/A',
+            'transactions': transactions,
+        }
+
     def parse(self, raw_text: str) -> Dict:
         """Parse SBI statement text using balance-delta approach."""
+        if self._is_inb_format(raw_text):
+            return self._parse_inb_format(raw_text)
+
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
         transactions = self._parse_transactions(raw_text, account_info)

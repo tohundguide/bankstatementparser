@@ -41,14 +41,140 @@ class IndusIndBankParser(BaseBankParser):
         ("Withdrawal Amt", 1, False),
         ("Deposit Amt", 1, False),
         ("Closing Balance", 1, False),
+        # Column header of the net-banking "Account Statement" download. That
+        # layout prints no IFSC and has the bank name only in its logo image,
+        # so without this anchor a counterparty IFSC in a narration
+        # ("N/SBIN125251974151/SBIN0000576/...") routed it to the SBI parser.
+        (r"Bank\s+Reference\s+Value\s+Date\b.*\bPayment\s+Narration\b.*\bAvailable\s+Balance", 10, True),
     ]
     NEGATIVE_RULES = [
         (r"\bHDFC0\w{6}\b", -8, True),
     ]
 
+    # ── Net-banking "Account Statement" layout ──────────────────────────
+    #   Bank Reference Value Date Type Payment Narration Debit Credit Available Balance
+    #   S46173898 02-Apr-2025 02-Apr-2025 00:00:0 Debit UPI/100098381620/88392...@ibl 520 33435.36
+    #   IMPS/P2A/509623169839/IDFB/PERFIOS                   <- narration line ABOVE
+    #   S17303809 06-Apr-2025 06-Apr-2025 00:00:0 Credit 1 26336.36
+    #   SOFTWARE SOL                                         <- narration line BELOW
+    # Amounts carry no decimals when whole ("520"); the Type column says
+    # Debit/Credit outright. A two-line narration is centred on the row, so
+    # its first line precedes the row line and its second follows it.
+    NB_ROW_RE = re.compile(
+        r'^(\S+)\s+(\d{1,2}-[A-Za-z]{3}-\d{4})\s+(\d{1,2}-[A-Za-z]{3}-\d{4})\s+\d{1,2}:\d{2}(?::\d{1,2})?\s+'
+        r'(Debit|Credit)\b\s*(.*?)\s*(-?[\d,]*\.?\d+)\s+(-?[\d,]*\.?\d+)\s*$',
+        re.IGNORECASE,
+    )
+    NB_HEADER_RE = re.compile(r'Bank\s+Reference\s+Value\s+Date\b', re.IGNORECASE)
+    NB_NARRATION_START_RE = re.compile(
+        r'^(UPI/|IMPS/|NEFT|RTGS|N/|R/|ATM\b|INDUS\b|POS\b|ACH\b|NACH\b|ECS\b|MMT/|IB/|INT\b|'
+        r'CHQ\b|CLG\b|TRF\b|CHARGES\b|SMS\b|CASH\b)',
+        re.IGNORECASE,
+    )
+    MON = {m: f'{i:02d}' for i, m in enumerate(
+        ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], 1)}
+
+    def _is_netbanking_format(self, raw_text: str) -> bool:
+        return bool(self.NB_HEADER_RE.search(raw_text)) and \
+            any(self.NB_ROW_RE.match(l.strip()) for l in raw_text.split('\n'))
+
+    def _parse_netbanking_format(self, raw_text: str) -> Dict:
+        lines = [l.strip() for l in raw_text.split('\n')]
+
+        def iso(d: str) -> str:
+            dd, mon, yyyy = d.split('-')
+            return f"{dd.zfill(2)}-{self.MON.get(mon.lower(), mon)}-{yyyy}"
+
+        acct = re.search(r'Account\s+Number\s*:\s*(\d+)', raw_text, re.IGNORECASE)
+        per = re.search(r'From\s+Date\s*:\s*(\S+)\s+To\s+Date\s*:\s*(\S+)', raw_text, re.IGNORECASE)
+        # The name cell wraps around its "Customer Name (Account Name)" label.
+        holder_parts = []
+        for l in lines[1:12]:
+            if re.match(r'^From\s+Date', l, re.IGNORECASE):
+                break
+            l = re.sub(r'Account\s+Number\s*:\s*\d+', '', l, flags=re.IGNORECASE)
+            l = re.sub(r'^(Customer\s+Name|\(Account\s+Name\))\s*', '', l, flags=re.IGNORECASE).strip()
+            if l:
+                holder_parts.append(l)
+        account_info = {
+            'account_number': acct.group(1) if acct else '',
+            'account_holder': ' '.join(holder_parts),
+            'branch': '',
+            'ifsc': '',
+            'type': '',
+        }
+
+        noise_re = re.compile(
+            r'^(Account\s+Statement|Transaction\s+Date\s*&?|Time|Page\s+\d+\s+of\s+\d+.*|Bank\s+Reference\b.*)$',
+            re.IGNORECASE,
+        )
+        transactions: List[Dict] = []
+        pending: List[str] = []
+        prev_inline_empty = False
+        started = False
+
+        def split_pending(new_inline_empty: bool):
+            """Divide the lines between two rows into (tail of prev, head of new)."""
+            if not transactions:
+                return [], pending[:]
+            k = next((i for i, t in enumerate(pending) if self.NB_NARRATION_START_RE.match(t)), None)
+            if k is not None:
+                return pending[:k], pending[k:]
+            if prev_inline_empty and new_inline_empty:
+                half = len(pending) // 2
+                return pending[:half], pending[half:]
+            if new_inline_empty and not prev_inline_empty:
+                return [], pending[:]
+            return pending[:], []
+
+        for s in lines:
+            if not s:
+                continue
+            if self.NB_HEADER_RE.search(s):
+                started = True
+                continue
+            if not started or noise_re.match(s):
+                continue
+            m = self.NB_ROW_RE.match(s)
+            if not m:
+                pending.append(s)
+                continue
+            inline = m.group(5).strip()
+            tail, head = split_pending(not inline)
+            if transactions and tail:
+                transactions[-1]['particulars'] += ' ' + ' '.join(tail)
+            pending = []
+            amount = m.group(6).replace(',', '').lstrip('-')
+            amount = f"{float(amount):.2f}"
+            balance = f"{float(m.group(7).replace(',', '')):.2f}"
+            is_credit = m.group(4).lower() == 'credit'
+            transactions.append({
+                'date': iso(m.group(2)),
+                'particulars': ' '.join(head + ([inline] if inline else [])),
+                'chq_ref': m.group(1),
+                'withdrawal': '' if is_credit else amount,
+                'deposit': amount if is_credit else '',
+                'balance': balance,
+            })
+            prev_inline_empty = not inline
+        if transactions and pending:
+            transactions[-1]['particulars'] += ' ' + ' '.join(pending)
+        for t in transactions:
+            t['particulars'] = re.sub(r'\s+', ' ', t['particulars']).strip()
+
+        return {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': f"{per.group(1)} to {per.group(2)}" if per else 'N/A',
+            'transactions': transactions,
+        }
 
     def parse(self, raw_text: str) -> Dict:
         """Parse IndusInd Bank statement text into structured data."""
+        if self._is_netbanking_format(raw_text):
+            return self._parse_netbanking_format(raw_text)
+
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
 
