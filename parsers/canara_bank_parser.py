@@ -91,7 +91,23 @@ class CanaraBankParser(BaseBankParser):
         # Transaction date patterns
         txn_date_slash = re.compile(r'^\s*(\d{2}/\d{2}/\d{4})\s+(.*)')
         txn_date_dash = re.compile(r'^\s*(\d{2}-\d{2}-\d{4})\s+(.*)')
-        txn_date_mon = re.compile(r'^\s*(\d{2}-\w{3}-\d{4})\s+(.*)')
+        # DD-MON-YY too: the branch "STATEMENT OF ACCOUNT" prints "01-APR-25".
+        # With only 4-digit years accepted, no real row matched and wrapped
+        # UPI timestamps ("09/09/2025 12:09:34") became the only "rows".
+        txn_date_mon = re.compile(r'^\s*(\d{2}-[A-Za-z]{3}-\d{2}(?:\d{2})?)\s+(.*)')
+        time_re = re.compile(r'^\d{1,2}:\d{2}')
+
+        # Layout with a BRANCH column before REF/CHQ.NO:
+        #   TRANS DATE | VALUE DATE | BRANCH | REF/CHQ.NO | DESCRIPTION | WITHDRAWS | DEPOSIT | BALANCE
+        has_branch_col = bool(re.search(r'BRANCH\s+REF/CHQ', raw_text, re.IGNORECASE))
+        page_header_re = re.compile(r'^\s*(TRANS\s+VALUE\s+BRANCH\b|DATE\s+DATE\s*$)', re.IGNORECASE)
+        stop_re = re.compile(r'^\s*Statement\s+Summary\b', re.IGNORECASE)
+        # A bare page number sits right before each repeated column header.
+        # (Bare numbers elsewhere are narration: a UPI time wraps as "12:39:" + "57".)
+        lines = [l for i, l in enumerate(lines)
+                 if not (re.fullmatch(r'\s*\d{1,3}\s*', l)
+                         and i + 1 < len(lines) and page_header_re.match(lines[i + 1]))]
+        opening_seen = False
 
         # Amount patterns at end of line
         amounts_3 = re.compile(
@@ -115,8 +131,15 @@ class CanaraBankParser(BaseBankParser):
             if skip:
                 continue
 
+            if stop_re.match(stripped):
+                break
+            if page_header_re.match(stripped):
+                continue
+
             # Try matching transaction line (all date formats)
             m = txn_date_mon.match(stripped) or txn_date_slash.match(stripped) or txn_date_dash.match(stripped)
+            if m and time_re.match(m.group(2).strip()):
+                m = None   # "27/06/2025 19:04:47" inside a UPI narration, not a row
             if m:
                 if current_txn:
                     transactions.append(current_txn)
@@ -132,10 +155,16 @@ class CanaraBankParser(BaseBankParser):
                 narration = rest
 
                 # Check for a second date (value date) at start of rest
-                val_date_m = re.match(r'(\d{2}[/-]\d{2}[/-]\d{4}|\d{2}-\w{3}-\d{4})\s+(.*)', rest)
+                val_date_m = re.match(r'(\d{2}[/-]\d{2}[/-]\d{4}|\d{2}-[A-Za-z]{3}-\d{2}(?:\d{2})?)\s+(.*)', rest)
                 if val_date_m:
                     rest = val_date_m.group(2).strip()
                     narration = rest
+                branch_code = ''
+                if has_branch_col:
+                    bm = re.match(r'(\d{1,5})\s+(.*)', rest)
+                    if bm:
+                        branch_code, rest = bm.group(1), bm.group(2).strip()
+                        narration = rest
 
                 am3 = amounts_3.search(rest)
                 am2 = amounts_2.search(rest)
@@ -163,6 +192,8 @@ class CanaraBankParser(BaseBankParser):
 
                     # Extract ref number
                     ref_m = re.match(r'(\S+)\s+(.*)', narration_part)
+                    if has_branch_col:
+                        ref_m = re.match(r'(\d{6,})\s+(.*)', narration_part)
                     if ref_m and re.search(r'\d{4,}', ref_m.group(1)):
                         chq_ref = ref_m.group(1)
                         narration = ref_m.group(2).strip()
@@ -195,6 +226,14 @@ class CanaraBankParser(BaseBankParser):
                 bal_str = f"{balance}{balance_suffix}" if balance_suffix else balance
                 date_normalized = self._normalize_date(date_str)
 
+                if re.match(r'^B/F\b', narration) and not opening_seen and not transactions and not current_txn:
+                    # Brought-forward balance: seeds the running balance, not a deposit.
+                    opening_seen = True
+                    current_txn = None
+                    transactions.append({'date': date_normalized, 'particulars': '__BF__', 'chq_ref': '',
+                                         'withdrawal': '', 'deposit': '', 'balance': bal_str})
+                    continue
+
                 current_txn = {
                     'date': date_normalized,
                     'particulars': narration,
@@ -215,6 +254,8 @@ class CanaraBankParser(BaseBankParser):
 
         if current_txn:
             transactions.append(current_txn)
+
+        transactions = [t for t in transactions if t['particulars'] != '__BF__']
 
         # Clean up
         for txn in transactions:
@@ -266,7 +307,10 @@ class CanaraBankParser(BaseBankParser):
         if m:
             info['account_number'] = m.group(1)
 
-        m = re.search(r'(?:Customer\s*Name|Name)[:\s]+(.+?)(?:\n|Account|Branch|IFSC)', raw_text, re.IGNORECASE)
+        # "Customer Name :" first — a bare "Name" also matches "Product Name : CURRENT ACCOUNT".
+        m = (re.search(r'Customer\s*Name\s*:\s*(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
+             or re.search(r'Account\s*Title\s*:\s*(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
+             or re.search(r'(?:Customer\s*Name|Name)[:\s]+(.+?)(?:\n|Account|Branch|IFSC)', raw_text, re.IGNORECASE))
         if m:
             info['account_holder'] = m.group(1).strip()
 
@@ -278,7 +322,7 @@ class CanaraBankParser(BaseBankParser):
         if m:
             info['branch'] = m.group(1).strip()
 
-        m = re.search(r'(?:Account\s*Type|Product)[:\s]+(.+?)(?:\n|Currency)', raw_text, re.IGNORECASE)
+        m = re.search(r'(?:Account\s*Type|Product(?:\s*Name)?)\s*[:\s]+(.+?)(?:\n|Currency)', raw_text, re.IGNORECASE)
         if m:
             info['type'] = m.group(1).strip()
 
@@ -303,11 +347,11 @@ class CanaraBankParser(BaseBankParser):
         }
 
         # DD-Mon-YYYY or DD-MMM-YYYY
-        m = re.match(r'(\d{2})-(\w{3})-(\d{4})', date_str)
+        m = re.match(r'(\d{2})-([A-Za-z]{3})-(\d{2}(?:\d{2})?)$', date_str)
         if m:
             day = m.group(1)
-            month = months.get(m.group(2), m.group(2))
-            year = m.group(3)
+            month = months.get(m.group(2).title(), m.group(2))
+            year = m.group(3) if len(m.group(3)) == 4 else '20' + m.group(3)
             return f"{day}-{month}-{year}"
 
         # DD/MM/YYYY -> DD-MM-YYYY
