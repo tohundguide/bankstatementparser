@@ -48,8 +48,99 @@ class YesBankParser(BaseBankParser):
         ("YES TOUCH", 3, False),
         ("YesRewardz", 3, False),
         ("Statement of account", 1, False),
+        # Branch-printed statement: no IFSC anywhere, bank name only in the
+        # footer/account type, while narrations carry counterparty IFSCs
+        # ("BARB0STJOHN", "BANK OF BARODA") — that routed it to Bank of Baroda.
+        # Its column header + a YES Bank mention after it is the anchor.
+        (r"(?s)TXN\s+DATE\s+VALUE\s+DATE\s+DESCRIPTION\s+REFERENCE\s+DEBITS\s+CREDITS\s+BALANCE"
+         r"(?=.*\bYES\s+(?:BANK|TOUCH|HEADSTART))", 10, True),
     ]
 
+    # ── Branch-printed "STATEMENT OF ACCOUNT" layout ────────────────────
+    #   TXN DATE VALUE DATE DESCRIPTION REFERENCE DEBITS CREDITS BALANCE
+    #   01-APR-2025 01-APR-2025 B/F ... 0.00 503.16 503.16
+    #   22-APR-2025 22-APR-2025 NET-NEFT-YESBN1202504…-B. 18,500.00 0.00 503.16
+    #   REKHA-BARB0STJOHN-HARISHTH-BANK            <- wrapped description
+    #   Opening Balance : 503.16 C / Total Debit Amt : … / Closing Balance : …
+    # Debit AND credit columns on every row (one is 0.00); the net-banking
+    # path below expects "DD Mon YYYY" and a single amount, so found 0 rows.
+    BRANCH_HEADER_RE = re.compile(
+        r'TXN\s+DATE\s+VALUE\s+DATE\s+DESCRIPTION\s+REFERENCE\s+DEBITS\s+CREDITS\s+BALANCE', re.IGNORECASE)
+    BRANCH_ROW_RE = re.compile(
+        r'^(\d{1,2}-[A-Za-z]{3}-\d{4})\s+(\d{1,2}-[A-Za-z]{3}-\d{4})\s+(.*?)\s*'
+        r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$')
+    BRANCH_STOP_RE = re.compile(r'^\s*(Opening\s+Balance\s*:|Total\s+(Debit|Credit)\s+Amt|\*+\s*END\s+OF\s+STATEMENT)', re.IGNORECASE)
+
+    def _parse_branch_format(self, raw_text: str) -> Dict:
+        def num(s: str) -> float:
+            return float(s.replace(',', ''))
+
+        acct = re.search(r'A/C\s+Number\s*:\s*(\d+)', raw_text, re.IGNORECASE)
+        branch = re.search(r'Branch\s*:\s*(.+)', raw_text)
+        actype = re.search(r'A/C\s+type\s*:\s*(.+)', raw_text, re.IGNORECASE)
+        holder = re.search(r'^\s*M/S\.?\s+(.+?)(?:\s+OD\s+Limit.*)?$', raw_text, re.MULTILINE)
+        per = re.search(r'Period\s*:\s*(\S+)\s+To\s+(\S+)', raw_text, re.IGNORECASE)
+        account_info = {
+            'account_number': acct.group(1) if acct else '',
+            'account_holder': holder.group(1).strip() if holder else '',
+            'branch': branch.group(1).strip() if branch else '',
+            'ifsc': '',
+            'type': actype.group(1).strip() if actype else '',
+        }
+
+        transactions: List[Dict] = []
+        txn: Optional[Dict] = None
+        started = False
+        for line in raw_text.split('\n'):
+            s = line.strip()
+            if not s:
+                continue
+            if self.BRANCH_HEADER_RE.search(s):
+                started = True
+                continue
+            if not started or re.match(r'^Page\s+Number\s*:', s, re.IGNORECASE):
+                continue
+            if self.BRANCH_STOP_RE.match(s):
+                break
+            m = self.BRANCH_ROW_RE.match(s)
+            if m:
+                if txn:
+                    transactions.append(txn)
+                txn = None
+                desc = m.group(3).strip()
+                if re.match(r'^B/F\b', desc):
+                    continue  # brought-forward balance: opening, not a transaction
+                debit, credit = num(m.group(4)), num(m.group(5))
+                txn = {
+                    'date': self._normalize_date(m.group(1)),
+                    'particulars': desc,
+                    'chq_ref': '',
+                    'withdrawal': f'{debit:.2f}' if debit else '',
+                    'deposit': f'{credit:.2f}' if credit else '',
+                    'balance': f'{num(m.group(6)):.2f}',
+                }
+                continue
+            if txn:
+                # The REFERENCE column shares the row line with the description,
+                # and the description's own wrap can repeat it on the next line
+                # ("…-MID 0696A0175322" + "0696A0175322"): that token is the ref.
+                parts = txn['particulars'].split()
+                if not txn['chq_ref'] and parts and s == parts[-1] and re.search(r'\d{4,}', s):
+                    txn['chq_ref'] = s
+                    continue
+                txn['particulars'] += ' ' + s
+        if txn:
+            transactions.append(txn)
+        for t in transactions:
+            t['particulars'] = re.sub(r'\s+', ' ', t['particulars']).strip()
+
+        return {
+            'bank_name': self.BANK_NAME,
+            'bank_code': self.BANK_CODE,
+            'account_info': account_info,
+            'period': f"{per.group(1)} to {per.group(2)}" if per else 'N/A',
+            'transactions': transactions,
+        }
 
     # Month name to number
     MONTHS = {
@@ -60,6 +151,9 @@ class YesBankParser(BaseBankParser):
 
     def parse(self, raw_text: str) -> Dict:
         """Parse Yes Bank statement text into structured data."""
+        if self.BRANCH_HEADER_RE.search(raw_text):
+            return self._parse_branch_format(raw_text)
+
         account_info = self._extract_account_info(raw_text)
         period = self._extract_period(raw_text)
 
@@ -472,10 +566,11 @@ class YesBankParser(BaseBankParser):
     def _normalize_date(self, date_str: str) -> str:
         """Convert 'DD Mon YYYY' to 'DD-MM-YYYY'."""
         # "21 Mar 2026" -> "21-03-2026"
-        m = re.match(r'(\d{1,2})\s+(\w{3})\s+(\d{4})', date_str)
+        # Also "22-APR-2025" (branch-printed statement).
+        m = re.match(r'(\d{1,2})[\s-]+([A-Za-z]{3})[\s-]+(\d{4})', date_str)
         if m:
             day = m.group(1).zfill(2)
-            month = self.MONTHS.get(m.group(2), m.group(2))
+            month = self.MONTHS.get(m.group(2).title(), m.group(2))
             year = m.group(3)
             return f"{day}-{month}-{year}"
 
