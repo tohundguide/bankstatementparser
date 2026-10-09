@@ -45,6 +45,10 @@ def export_to_excel(result: Dict, output_path: str):
     
     # ── Create Narration Mapping Sheet ──
     _create_narration_sheet(wb, result)
+
+    # ── Source Statements Sheet (merged exports only) ──
+    if result.get('merge_report'):
+        _create_sources_sheet(wb, result['merge_report'])
     
     # ── Save ──
     wb.save(output_path)
@@ -377,6 +381,56 @@ def _create_transaction_sheet(wb: Workbook, result: Dict):
     # ── Freeze + Filter ──
     ws.freeze_panes = f'A{header_row + 1}'
     ws.auto_filter.ref = f'A{header_row}:H{header_row + len(transactions)}'
+
+
+def _create_sources_sheet(wb: Workbook, report: Dict):
+    """List the files a merged statement was built from and check each join."""
+    ws = wb.create_sheet(title="Source Statements")
+    head_font = Font(name='Calibri', bold=True, size=11, color='FFFFFF')
+    head_fill = PatternFill(start_color='2E86C1', end_color='2E86C1', fill_type='solid')
+    bold = Font(name='Calibri', bold=True, size=11)
+    ok_font = Font(name='Calibri', size=10, color='27AE60', bold=True)
+    bad_font = Font(name='Calibri', size=10, color='C0392B', bold=True)
+
+    def header(row, labels, widths=None):
+        for c, label in enumerate(labels, 1):
+            cell = ws.cell(row=row, column=c, value=label)
+            cell.font, cell.fill = head_font, head_fill
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            if widths:
+                ws.column_dimensions[get_column_letter(c)].width = widths[c - 1]
+
+    ws.cell(row=1, column=1, value='Files merged (oldest first)').font = bold
+    header(2, ['FILE', 'PERIOD', 'TRANSACTIONS', 'DUPLICATES REMOVED', 'OPENING BALANCE', 'CLOSING BALANCE'],
+           [42, 28, 16, 20, 20, 20])
+    row = 3
+    for f in report.get('files', []):
+        values = [f.get('filename'), f.get('period'), f.get('transactions'),
+                  f.get('duplicates_removed'), f.get('opening_balance'), f.get('closing_balance')]
+        for c, v in enumerate(values, 1):
+            cell = ws.cell(row=row, column=c, value=v)
+            if c >= 5 and isinstance(v, (int, float)):
+                cell.number_format = '#,##0.00'
+        row += 1
+
+    boundaries = report.get('boundaries', [])
+    if boundaries:
+        row += 1
+        ws.cell(row=row, column=1, value='Balance carried over between files').font = bold
+        row += 1
+        header(row, ['FROM', 'TO', 'CLOSING BALANCE', 'NEXT ROW SHOULD SHOW', 'NEXT ROW SHOWS', 'RESULT'])
+        row += 1
+        for b in boundaries:
+            values = [b.get('from_file'), b.get('to_file'), b.get('closing_balance'),
+                      b.get('expected_balance'), b.get('shown_balance')]
+            for c, v in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c, value=v)
+                if c >= 3 and isinstance(v, (int, float)):
+                    cell.number_format = '#,##0.00'
+            ok = b.get('balance_continues')
+            res = ws.cell(row=row, column=6, value='✓ Continues' if ok else '✗ Break — period missing?')
+            res.font = ok_font if ok else bad_font
+            row += 1
 
 
 def _create_summary_sheet(wb: Workbook, result: Dict):

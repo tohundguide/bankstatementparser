@@ -36,6 +36,7 @@ from parsers.registry import detect_bank, get_parser
 from parsers.base_parser import BaseBankParser
 from parsers import llm_parser
 from exporters.excel_exporter import export_to_excel, export_to_csv
+from statement_merger import merge_statements, verification_stats
 from api_auth import require_api_key
 
 from flask_cors import CORS
@@ -352,8 +353,13 @@ def parse_statement():
         
         v_pct = (v_match / v_total * 100) if v_total > 0 else 0
 
-        # 7. Return result
+        # 7. Return result. The website's "merge statements" mode asks for every
+        # row (return_transactions=1) and hands them back to /merge.
+        extra = {}
+        if request.form.get('return_transactions') == '1':
+            extra['transactions'] = transactions
         return jsonify({
+            **extra,
             'success': True,
             'bank_name': result['bank_name'],
             'account_info': result.get('account_info', {}),
@@ -992,6 +998,104 @@ def batch_parse():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': f'Batch processing error: {str(e)}'}), 500
+
+
+MERGE_MAX_FILES = 60
+MERGE_MAX_ROWS = 200_000
+_TXN_FIELDS = ('date', 'particulars', 'chq_ref', 'withdrawal', 'deposit', 'balance')
+
+
+@app.route('/merge', methods=['POST'])
+def merge_parsed_statements():
+    """
+    Merge statements the browser already parsed one by one through /parse
+    (with return_transactions=1) into ONE Excel + CSV.
+
+    Parsing stays one request per file so a batch of scanned PDFs can't run
+    into the gunicorn timeout; this step only combines rows, so it is fast.
+
+    Body (JSON): {"statements": [{filename, bank_name, account_info, period,
+                                  transactions, warnings}, ...]}
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        raw = payload.get('statements')
+        if not isinstance(raw, list) or not raw:
+            return jsonify({'error': 'No statements to merge'}), 400
+        if len(raw) > MERGE_MAX_FILES:
+            return jsonify({'error': f'Too many statements (max {MERGE_MAX_FILES})'}), 400
+
+        statements, rows = [], 0
+        for s in raw:
+            if not isinstance(s, dict):
+                continue
+            txns = []
+            for t in s.get('transactions') or []:
+                if isinstance(t, dict):
+                    txns.append({f: str(t.get(f) or '')[:1000] for f in _TXN_FIELDS})
+            rows += len(txns)
+            info = s.get('account_info') if isinstance(s.get('account_info'), dict) else {}
+            statements.append({
+                'filename': str(s.get('filename') or '')[:200],
+                'bank_name': str(s.get('bank_name') or '')[:100],
+                'account_info': {str(k)[:50]: str(v)[:200] for k, v in info.items()},
+                'period': str(s.get('period') or '')[:100],
+                'warnings': [str(w)[:500] for w in (s.get('warnings') or [])][:50],
+                'transactions': txns,
+            })
+        if rows == 0:
+            return jsonify({'error': 'The statements contain no transactions'}), 400
+        if rows > MERGE_MAX_ROWS:
+            return jsonify({'error': f'Too many transactions to merge (max {MERGE_MAX_ROWS:,})'}), 400
+
+        result = merge_statements(statements)
+        transactions = result['transactions']
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_bank = re.sub(r'[^\w]+', '_', result['bank_name']).strip('_') or 'Bank'
+        excel_filename = f'Merged_Statement_{safe_bank}_{timestamp}.xlsx'
+        csv_filename = f'Merged_Statement_{safe_bank}_{timestamp}.csv'
+        export_to_excel(result, os.path.join(app.config['OUTPUT_FOLDER'], excel_filename))
+        export_to_csv(result, os.path.join(app.config['OUTPUT_FOLDER'], csv_filename))
+
+        stats = verification_stats(transactions)
+        preview = []
+        prev = None
+        for idx, t in enumerate(transactions[:10]):
+            bal = _pbv(t['balance'])
+            if idx == 0:
+                chk = '○ Opening'
+            elif prev is not None and bal is not None:
+                w = float(t['withdrawal'].replace(',', '') or 0) if t['withdrawal'] else 0
+                d = float(t['deposit'].replace(',', '') or 0) if t['deposit'] else 0
+                diff = bal - (prev + d - w)
+                chk = '✓ Match' if abs(diff) < 0.02 else f'✗ Diff: {diff:+,.2f}'
+            else:
+                chk = '? N/A'
+            prev = bal
+            preview.append({**t, 'check': chk})
+
+        return jsonify({
+            'success': True,
+            'merged': True,
+            'bank_name': result['bank_name'],
+            'account_info': result['account_info'],
+            'total_transactions': len(transactions),
+            'period': result['period'],
+            'download_url': url_for('download_file', filename=excel_filename),
+            'excel_filename': excel_filename,
+            'csv_download_url': url_for('download_file', filename=csv_filename),
+            'csv_filename': csv_filename,
+            'verification_stats': stats,
+            'parsed_by': 'structured',
+            'warnings': result['warnings'],
+            'notes': result['notes'],
+            'merge_report': result['merge_report'],
+            'preview': preview,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': f'Merge error: {str(e)}'}), 500
 
 
 @app.route('/download/<filename>')
