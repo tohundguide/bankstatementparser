@@ -72,3 +72,7 @@ Thumbs.db
 !tests/hdfc_seiza_fixture.txt
 !tests/seiza_ocr_dump.txt
 !tests/cafe_seiza_ocr_dump.txt
+
+# ─── Source that the broad rules above would hide ───
+!tests/test_*.py
+!DEPLOY_RAILWAY.md

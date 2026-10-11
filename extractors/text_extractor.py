@@ -29,23 +29,38 @@ logger = logging.getLogger(__name__)
 def extract_text(filepath: str, ext: str, password: str = None) -> str:
     """
     Extract raw text from a file based on its extension.
-    
+
     Args:
         filepath: Absolute path to the file
         ext: File extension (lowercase, with dot, e.g. '.pdf')
         password: Optional password for encrypted PDFs
-    
+
     Returns:
-        Raw text content of the file
+        Raw text content of the file (see extract_text_info for HOW it was read)
+    """
+    return extract_text_info(filepath, ext, password=password)[0]
+
+
+def extract_text_info(filepath: str, ext: str, password: str = None):
+    """
+    Extract raw text from a file, and say how it was read.
+
+    Returns:
+        (text, info) where info is
+          {'method': 'text' | 'docx' | 'pdf_text' | 'ocr', 'pages': int | None}
+        'pages' is how many pages the PDF holds (what the reader saw); None for
+        text and Word files. A reader that wants to say "amounts consistent,
+        text unverified" for an OCR read needs 'method'; a reader checking a
+        statement that prints "Page 1 of 12" needs 'pages'.
     """
     ext = ext.lower()
-    
+
     if ext in ['.txt', '.csv']:
-        return _extract_from_text(filepath)
+        return _extract_from_text(filepath), {'method': 'text', 'pages': None}
     elif ext in ['.docx', '.doc']:
-        return _extract_from_docx(filepath)
+        return _extract_from_docx(filepath), {'method': 'docx', 'pages': None}
     elif ext == '.pdf':
-        return _extract_from_pdf(filepath, password=password)
+        return _extract_from_pdf_info(filepath, password=password)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
@@ -93,26 +108,36 @@ def _extract_from_docx(filepath: str) -> str:
 
 
 def _extract_from_pdf(filepath: str, password: str = None) -> str:
+    """Text of a PDF (see _extract_from_pdf_info for how it was read)."""
+    return _extract_from_pdf_info(filepath, password=password)[0]
+
+
+def _extract_from_pdf_info(filepath: str, password: str = None):
     """
-    Extract text from PDF files.
+    Extract text from PDF files, with how it was read and the page count.
     Pipeline:
       1. Try pdfplumber (best for structured/table PDFs)
       2. Try PyPDF2 as fallback
       3. If both fail (scanned PDF), try OCR with Tesseract
-    
+
     Handles password-protected PDFs automatically.
+
+    Returns:
+        (text, {'method': 'pdf_text' | 'ocr', 'pages': int | None})
     """
     text = ""
-    
+    n_pages = None
+
     # --- Step 1: Try pdfplumber ---
     try:
         import pdfplumber
         open_kwargs = {}
         if password:
             open_kwargs['password'] = password
-        
+
         with pdfplumber.open(filepath, **open_kwargs) as pdf:
             pages = []
+            n_pages = len(pdf.pages)
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
@@ -128,7 +153,7 @@ def _extract_from_pdf(filepath: str, password: str = None) -> str:
             text = '\n'.join(pages)
             if text.strip():
                 logger.info(f"Extracted {len(text)} chars via pdfplumber")
-                return text
+                return text, {'method': 'pdf_text', 'pages': n_pages}
     except Exception as e:
         logger.debug(f"pdfplumber failed: {e}")
     
@@ -160,6 +185,7 @@ def _extract_from_pdf(filepath: str, password: str = None) -> str:
                     )
         
         pages = []
+        n_pages = len(reader.pages)
         for page in reader.pages:
             page_text = page.extract_text()
             if page_text:
@@ -167,12 +193,12 @@ def _extract_from_pdf(filepath: str, password: str = None) -> str:
         text = '\n'.join(pages)
         if text.strip():
             logger.info(f"Extracted {len(text)} chars via PyPDF2")
-            return text
+            return text, {'method': 'pdf_text', 'pages': n_pages}
     except ValueError:
         raise  # Re-raise password errors
     except Exception as e:
         logger.debug(f"PyPDF2 failed: {e}")
-    
+
     # --- Step 3: OCR fallback for scanned PDFs ---
     if not text.strip():
         logger.info("No text extracted — attempting OCR...")
@@ -180,7 +206,12 @@ def _extract_from_pdf(filepath: str, password: str = None) -> str:
             text = _extract_via_ocr(filepath)
             if text.strip():
                 logger.info(f"Extracted {len(text)} chars via OCR")
-                return text
+                if n_pages is None:
+                    try:
+                        n_pages = _page_count(filepath, _find_poppler_path())
+                    except Exception:
+                        n_pages = None
+                return text, {'method': 'ocr', 'pages': n_pages}
         except ImportError as e:
             raise ValueError(
                 f"This appears to be a scanned/image-based PDF. "

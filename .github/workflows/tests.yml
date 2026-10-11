@@ -1,0 +1,24 @@
+# The tests, on every push and pull request (bsp-2). The same tests run again
+# inside the Docker build (Dockerfile), so a red test never becomes a running
+# parser even when a deploy is sent from a laptop with `railway up`.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: OCR tools (what the Dockerfile installs)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr poppler-utils
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q -p no:cacheprovider tests

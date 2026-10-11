@@ -17,6 +17,12 @@ RUN pip install --no-cache-dir -r requirements.txt gunicorn
 # Copy application code
 COPY . .
 
+# The tests gate the image: a red test fails the build, so Railway never swaps
+# a broken parser in, even for a deploy sent by hand from a laptop (bsp-2).
+# The healthcheck in railway.json is the second gate: a container that does
+# not answer /status is never promoted.
+RUN pip install --no-cache-dir pytest && python -m pytest -q -p no:cacheprovider tests
+
 # Create necessary directories
 RUN mkdir -p uploads output feedback learned/cache learned/profiles
 

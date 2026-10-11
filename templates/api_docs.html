@@ -186,6 +186,7 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
                 <tr><td>bank</td><td>String</td><td>No</td><td>Bank code (e.g. <code>jkbank</code>, <code>hdfc</code>). Default: <code>auto</code> (auto-detect).</td></tr>
                 <tr><td>password</td><td>String</td><td>No</td><td>PDF password, if the file is password-protected.</td></tr>
                 <tr><td>format</td><td>String</td><td>No</td><td><code>json</code> (default) — full transaction data. <code>excel</code> — includes download URL for .xlsx file.</td></tr>
+                <tr><td>allow_ai</td><td>String</td><td>No</td><td><code>true</code> (default) — a layout no parser knows is read by AI. <code>false</code> — it is refused with <code>PARSE_FAILED</code> instead, so your file never reaches an AI model. Nothing you send through the API is kept, cached or learned from either way.</td></tr>
             </tbody>
         </table>
         <div class="alert">
@@ -205,33 +206,48 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
   -F <span class="string">"bank=auto"</span></code></pre>
 
         <h3>Success Response (200)</h3>
+        <p>The header <code>X-Parser-Version</code> carries the parser version on every <code>/api/v1</code> answer. Contract: <code>contract/v1/response.schema.json</code> in the repo; <code>/api/v1</code> only grows, a breaking change would be <code>/api/v2</code>.</p>
         <pre><code>{
   <span class="key">"success"</span>: true,
+  <span class="key">"parser_version"</span>: <span class="string">"{{ parser_version }}"</span>,
   <span class="key">"bank_name"</span>: <span class="string">"HDFC Bank"</span>,
+  <span class="key">"account_number"</span>: <span class="string">"50100XXXXXX"</span>,   <span class="comment">// as printed: whole, or masked</span>
+  <span class="key">"ifsc"</span>: <span class="string">"HDFC0000123"</span>,
   <span class="key">"account_info"</span>: {
     <span class="key">"account_number"</span>: <span class="string">"50100XXXXXX"</span>,
     <span class="key">"holder"</span>: <span class="string">"JOHN DOE"</span>
   },
+  <span class="key">"opening_balance"</span>: <span class="string">"30,230.50"</span>,   <span class="comment">// as printed, or null</span>
+  <span class="key">"closing_balance"</span>: <span class="string">"45,230.50"</span>,
   <span class="key">"total_transactions"</span>: 145,
-  <span class="key">"period"</span>: <span class="string">"01 Apr 2025 - 30 Apr 2025"</span>,
+  <span class="key">"period"</span>: <span class="string">"01/04/2025 to 30/04/2025"</span>,
+  <span class="key">"period_from"</span>: <span class="string">"2025-04-01"</span>,   <span class="comment">// the period PRINTED on the statement, ISO; null when it prints none</span>
+  <span class="key">"period_to"</span>: <span class="string">"2025-04-30"</span>,
+  <span class="key">"pages"</span>: { <span class="key">"seen"</span>: 12, <span class="key">"stated"</span>: 12 },   <span class="comment">// pages read, and the "of N" the statement prints</span>
+  <span class="key">"read_by"</span>: <span class="string">"pdf_text"</span>,   <span class="comment">// pdf_text | ocr | text | docx | ai</span>
   <span class="key">"parsed_by"</span>: <span class="string">"structured"</span>,
   <span class="key">"verification"</span>: {
     <span class="key">"matched"</span>: 140,
     <span class="key">"total"</span>: 144,
     <span class="key">"percent"</span>: 97.2
   },
+  <span class="key">"filled"</span>: { <span class="key">"balances"</span>: 0, <span class="key">"amounts"</span>: 0 },   <span class="comment">// figures the parser made up itself, see below</span>
   <span class="key">"transactions"</span>: [
     {
+      <span class="key">"seq"</span>: 1,
       <span class="key">"date"</span>: <span class="string">"01/04/2025"</span>,
       <span class="key">"particulars"</span>: <span class="string">"UPI/CR/412XXXXXX/GOOGLE PAY"</span>,
       <span class="key">"chq_ref"</span>: <span class="string">""</span>,
       <span class="key">"withdrawal"</span>: <span class="string">""</span>,
       <span class="key">"deposit"</span>: <span class="string">"15000.00"</span>,
       <span class="key">"balance"</span>: <span class="string">"45230.50"</span>
+      <span class="comment">// "balance_source": "computed" when the statement printed no balance and the parser computed it;</span>
+      <span class="comment">// "amount_source": "inferred" when the parser took the amount from the balance movement</span>
     }
     <span class="comment">// ... all transactions</span>
   ],
-  <span class="key">"preview"</span>: [ <span class="comment">/* first 10 rows with balance verification */</span> ]
+  <span class="key">"preview"</span>: [ <span class="comment">/* first 10 rows with balance verification */</span> ],
+  <span class="key">"warnings"</span>: []
 }</code></pre>
 
         <h3>Error Response (4xx)</h3>
@@ -256,7 +272,7 @@ Retry-After: 3600  <span class="comment"># (only on 429 responses)</span></code>
 
         <h3>Response</h3>
         <pre><code>{
-  <span class="key">"version"</span>: <span class="string">"2.1"</span>,
+  <span class="key">"version"</span>: <span class="string">"{{ parser_version }}"</span>,
   <span class="key">"banks"</span>: [
     { <span class="key">"code"</span>: <span class="string">"jkbank"</span>, <span class="key">"name"</span>: <span class="string">"JK Bank"</span> },
     { <span class="key">"code"</span>: <span class="string">"hdfc"</span>, <span class="key">"name"</span>: <span class="string">"HDFC Bank"</span> }

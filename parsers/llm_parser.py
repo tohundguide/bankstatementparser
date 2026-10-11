@@ -24,7 +24,9 @@ from typing import Dict, Optional
 # ── Config ──
 _GEMINI_KEY = os.environ.get('GEMINI_API_KEY', '')
 _DAILY_LIMIT = int(os.environ.get('LLM_DAILY_LIMIT', '20'))
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# learned/ lives under DATA_DIR when it is set (on Railway: the mounted volume,
+# so profiles and the daily call count survive a deploy); else beside the code.
+_BASE_DIR = os.environ.get('DATA_DIR') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CACHE_DIR = os.path.join(_BASE_DIR, 'learned', 'cache')
 _PROFILES_DIR = os.path.join(_BASE_DIR, 'learned', 'profiles')
 _RATE_FILE = os.path.join(_BASE_DIR, 'learned', 'rate_limit.json')
@@ -211,19 +213,23 @@ def get_learned_profiles():
 #  Main Parse Function
 # ═══════════════════════════════════════════════════════
 
-def parse_with_llm(raw_text: str) -> Optional[Dict]:
+def parse_with_llm(raw_text: str, persist: bool = True) -> Optional[Dict]:
     """
     Parse bank statement text using Google Gemini API.
-    
+
     Cost protection flow:
       1. Check cache → if hit, return immediately (₹0)
       2. Check rate limit → if exceeded, return None
       3. Call Gemini API (₹0.15)
       4. Cache the result for future re-uploads
       5. Save learned bank profile for detection
-    
+
+    persist=False does steps 1 to 3 only: nothing of this text is written to
+    the cache or to a learned profile. The API path (/api/v1/parse) uses it,
+    so a file an API caller sent is never kept in any form (bsp-1).
+
     Returns:
-        Parsed result di    ct, or None on failure
+        Parsed result dict, or None on failure
     """
     if not _GEMINI_KEY:
         return None
@@ -282,10 +288,10 @@ def parse_with_llm(raw_text: str) -> Optional[Dict]:
         # Validate and normalize
         result = _normalize_response(parsed)
         
-        if result:
+        if result and persist:
             # Layer 2: Cache for future re-uploads
             _save_cache(sig, result)
-            
+
             # Layer 3: Learn bank profile for detection
             bank_name = parsed.get('bank_name', '')
             if bank_name:

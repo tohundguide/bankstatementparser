@@ -72,3 +72,17 @@ feedback/           → User-submitted files for improvement
 ## License
 
 MIT
+
+## API v1 contract and `allow_ai`
+
+`POST /api/v1/parse` answers the shape in `contract/v1/response.schema.json`
+(sample: `contract/v1/sample-v1-scan.json`). Beside the fields it always had, it
+says `parser_version` (also the `X-Parser-Version` header), `account_number`,
+`ifsc`, `period_from`/`period_to` (the period the bank printed, ISO),
+`pages {seen, stated}`, `read_by` (`pdf_text`, `ocr`, `text`, `docx`, `ai`), a
+`seq` on every line, and marks every figure it made up itself:
+`balance_source: computed` on a balance the statement did not print,
+`amount_source: inferred` on an amount taken from the balance movement, with
+the counts in `filled`. Send `allow_ai=false` and a layout no parser knows is
+refused (`PARSE_FAILED`) instead of being read by AI; nothing sent through the
+API is kept, cached or learned from either way. Deploys: `DEPLOY_RAILWAY.md`.

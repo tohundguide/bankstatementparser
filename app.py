@@ -31,7 +31,7 @@ from datetime import datetime
 from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for
 
 # Our modules
-from extractors.text_extractor import extract_text, check_ocr_available
+from extractors.text_extractor import extract_text, extract_text_info, check_ocr_available
 from parsers.registry import detect_bank, get_parser
 from parsers.base_parser import BaseBankParser
 from parsers import llm_parser
@@ -61,7 +61,17 @@ MAX_UPLOAD_MB = int(os.environ.get('MAX_UPLOAD_MB', '200'))
 app.config['MAX_CONTENT_LENGTH'] = MAX_UPLOAD_MB * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['OUTPUT_FOLDER'] = os.path.join(os.path.dirname(__file__), 'output')
-app.config['FEEDBACK_FOLDER'] = os.path.join(os.path.dirname(__file__), 'feedback')
+# Feedback (and the learned bank profiles in parsers/llm_parser.py) live under
+# DATA_DIR. On Railway the container's disk is new on every deploy, so DATA_DIR
+# points at the mounted volume; uploads and output stay on the container, they
+# are never kept.
+DATA_DIR = os.environ.get('DATA_DIR') or os.path.dirname(os.path.abspath(__file__))
+app.config['FEEDBACK_FOLDER'] = os.path.join(DATA_DIR, 'feedback')
+
+# The parser's own version: in /status, in every /api/v1 answer (the field and
+# the X-Parser-Version header) and kept by a reader beside every statement it
+# read, so a release that changes a reading can name the statements it touched.
+PARSER_VERSION = '2.3.0'
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -124,6 +134,14 @@ def post_process(result):
 
     have_balances = sum(1 for t in ordered if _pbv(t.get('balance')) is not None)
 
+    # Every figure this function makes up is marked on its line (balance_source
+    # 'computed', amount_source 'inferred') and counted in result['filled'], so a
+    # reader never takes a balance the parser computed for one the bank printed:
+    # a statement whose balances were all computed "adds up" because this code
+    # made it so, which proves nothing about the amounts.
+    filled_balances = 0
+    inferred_amounts = 0
+
     if have_balances < len(ordered) * 0.5 and opening is not None:
         running = opening
         for i, t in enumerate(ordered):
@@ -138,6 +156,12 @@ def post_process(result):
             running = running + d - w
             if _pbv(t.get('balance')) is None:
                 t['balance'] = f'{running:.2f}'
+                t['balance_source'] = 'computed'
+                filled_balances += 1
+            else:
+                # A printed balance is the truth from here on: the next computed
+                # one chains from it, not from a running figure that drifted.
+                running = _pbv(t.get('balance'))
 
     # --- (c) Infer W/D when both blank but balance moves ---
     prev = None
@@ -149,12 +173,143 @@ def post_process(result):
             delta = round(bal - prev, 2)
             if delta < 0:
                 t['withdrawal'] = f'{abs(delta):.2f}'
+                t['amount_source'] = 'inferred'
+                inferred_amounts += 1
             elif delta > 0:
                 t['deposit'] = f'{delta:.2f}'
+                t['amount_source'] = 'inferred'
+                inferred_amounts += 1
         if bal is not None:
             prev = bal
 
+    result['filled'] = {'balances': filled_balances, 'amounts': inferred_amounts}
     return result
+
+
+def _form_flag(value, default):
+    """A form field read as yes/no: 'false', '0', 'no', 'off' are no; blank or missing is the default."""
+    if value is None or str(value).strip() == '':
+        return default
+    return str(value).strip().lower() not in ('false', '0', 'no', 'off')
+
+
+_PAGE_OF_RE = re.compile(r'page\s*(\d{1,4})\s*(?:of|/)\s*(\d{1,4})', re.IGNORECASE)
+
+
+def _pages_stated(raw_text):
+    """The page count the statement prints ("Page 3 of 12"): the largest 'of' seen, or None."""
+    if not raw_text:
+        return None
+    best = 0
+    for m in _PAGE_OF_RE.finditer(raw_text):
+        try:
+            best = max(best, int(m.group(2)))
+        except ValueError:
+            continue
+    return best or None
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], start=1)}
+
+
+def _iso_day(s):
+    """A printed day ('01/04/2025', '1-Apr-2025', '01 April 2025', '2025-04-01') as YYYY-MM-DD, or None."""
+    if not s:
+        return None
+    s = str(s).strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        return s
+    m = re.match(r'^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2}|\d{4})$', s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        y = int(y) if len(y) == 4 else 2000 + int(y)
+        return f'{y:04d}-{mo:02d}-{d:02d}' if 1 <= mo <= 12 and 1 <= d <= 31 else None
+    m = re.match(r'^(\d{1,2})[-/ ,]*([A-Za-z]{3})[A-Za-z]*[-/ ,]+(\d{2}|\d{4})$', s)
+    if m and m.group(2).lower() in _MONTHS:
+        d, mo, y = int(m.group(1)), _MONTHS[m.group(2).lower()], m.group(3)
+        y = int(y) if len(y) == 4 else 2000 + int(y)
+        return f'{y:04d}-{mo:02d}-{d:02d}' if 1 <= d <= 31 else None
+    return None
+
+
+def _period_bounds(period):
+    """'01/04/2025 to 30/04/2025' (or '-', '–' between) as (from, to) in ISO; (None, None) when it is not a period."""
+    if not period or str(period).strip().upper() == 'N/A':
+        return None, None
+    m = re.match(r'^\s*(.+?)\s+(?:to|-|–|—)\s+(.+?)\s*$', str(period), re.IGNORECASE)
+    if not m:
+        return None, None
+    a, b = _iso_day(m.group(1)), _iso_day(m.group(2))
+    return (a, b) if a and b and a <= b else (None, None)
+
+
+def build_api_response(result, transactions, *, used_llm, read_method, pages_seen, pages_stated,
+                       verification, preview):
+    """
+    The /api/v1/parse answer (contract/v1/response.schema.json).
+
+    Today's fields stay exactly as they were, other callers read them. v1 adds
+    beside them: parser_version; account_number and ifsc at the top level; the
+    period the bank PRINTED as period_from/period_to (ISO); pages {seen,
+    stated}; read_by (pdf_text, ocr, text, docx, or ai); seq on every line;
+    and the figures the parser filled in itself (balance_source 'computed',
+    amount_source 'inferred', the 'filled' counts, a sentence in warnings).
+    /api/v1 only grows: a breaking change is /api/v2.
+    """
+    info = result.get('account_info') or {}
+    period_from, period_to = _period_bounds(result.get('period'))
+    filled = result.get('filled') or {}
+    n_balances = int(filled.get('balances') or 0)
+    n_amounts = int(filled.get('amounts') or 0)
+    lines = []
+    for i, t in enumerate(transactions, start=1):
+        line = {
+            'seq': i,
+            'date': t['date'],
+            'particulars': t['particulars'],
+            'chq_ref': t['chq_ref'],
+            'withdrawal': t['withdrawal'],
+            'deposit': t['deposit'],
+            'balance': t['balance'],
+        }
+        if t.get('value_date'):
+            line['value_date'] = t['value_date']
+        if t.get('balance_source'):
+            line['balance_source'] = t['balance_source']
+        if t.get('amount_source'):
+            line['amount_source'] = t['amount_source']
+        lines.append(line)
+    warnings = list(result.get('warnings', []))
+    if n_balances:
+        warnings.append(f"{n_balances} balance(s) were not printed: the parser computed them from the balance "
+                        f"before and the amounts (balance_source: computed)")
+    if n_amounts:
+        warnings.append(f"{n_amounts} amount(s) were not printed: the parser inferred them from the balance "
+                        f"movement (amount_source: inferred)")
+    return {
+        'success': True,
+        'parser_version': PARSER_VERSION,
+        'bank_name': result['bank_name'],
+        'account_info': info,
+        'account_number': (str(info.get('account_number')).strip() or None) if info.get('account_number') else None,
+        'ifsc': (str(info.get('ifsc')).strip().upper() or None) if info.get('ifsc') else None,
+        'opening_balance': info.get('opening_balance') or None,
+        'closing_balance': info.get('closing_balance') or None,
+        'total_transactions': len(transactions),
+        'period': result.get('period', 'N/A'),
+        'period_from': period_from,
+        'period_to': period_to,
+        'pages': {'seen': pages_seen, 'stated': pages_stated},
+        'read_by': 'ai' if used_llm else (read_method or 'pdf_text'),
+        'parsed_by': 'ai' if used_llm else 'structured',
+        'verification': verification,
+        'filled': {'balances': n_balances, 'amounts': n_amounts},
+        'transactions': lines,
+        'preview': preview,
+        'warnings': warnings,
+        'ocr_corrections': result.get('ocr_corrections', []),
+    }
 
 # ── Auto-cleanup: delete temp files older than 1 hour ──
 import threading
@@ -176,6 +331,14 @@ def _cleanup_old_files():
 
 _cleanup_thread = threading.Thread(target=_cleanup_old_files, daemon=True)
 _cleanup_thread.start()
+
+
+@app.after_request
+def _stamp_parser_version(response):
+    """Every /api/v1 answer, errors included, says which parser made it."""
+    if request.path.startswith('/api/v1/'):
+        response.headers['X-Parser-Version'] = PARSER_VERSION
+    return response
 
 
 @app.route('/llms.txt')
@@ -1144,7 +1307,7 @@ def status():
     ocr = check_ocr_available()
     banks = get_supported_banks()
     return jsonify({
-        'version': '2.2',
+        'version': PARSER_VERSION,
         'banks': [{'code': b['code'], 'name': b['name']} for b in banks],
         'ocr': ocr,
         'llm': llm_parser.get_status(),
@@ -1157,6 +1320,10 @@ def status():
             'ocr_scanned_pdfs': ocr['available'],
             'ai_fallback': llm_parser.is_available(),
             'feedback_collection': True,
+            # /api/v1/parse honours allow_ai=false: no parser fits, the answer
+            # is PARSE_FAILED, never the parser's own AI (contract v1).
+            'allow_ai_param': True,
+            'contract': 'v1',
         }
     })
 
@@ -1178,6 +1345,7 @@ def api_docs():
         rate_limit=rate_limit,
         base_url=base_url,
         ai_available=llm_parser.is_available(),
+        parser_version=PARSER_VERSION,
     )
 
 
@@ -1188,7 +1356,7 @@ def api_status():
     ocr = check_ocr_available()
     banks = get_supported_banks()
     return jsonify({
-        'version': '2.2',
+        'version': PARSER_VERSION,
         'banks': [{'code': b['code'], 'name': b['name']} for b in banks],
         'ocr': ocr,
         'llm': llm_parser.get_status(),
@@ -1200,6 +1368,10 @@ def api_status():
             'password_pdfs': True,
             'ocr_scanned_pdfs': ocr['available'],
             'ai_fallback': llm_parser.is_available(),
+            # /api/v1/parse honours allow_ai=false: no parser fits, the answer
+            # is PARSE_FAILED, never the parser's own AI (contract v1).
+            'allow_ai_param': True,
+            'contract': 'v1',
         }
     })
 
@@ -1385,7 +1557,10 @@ def api_parse():
       - bank (optional, default 'auto'): Bank code or 'auto'
       - password (optional): PDF password
       - format (optional, default 'json'): 'json' or 'excel'
-    
+      - allow_ai (optional, default true): 'false' means a statement no parser
+        knows is refused (PARSE_FAILED) instead of being read by the parser's
+        own AI. Nothing an API caller sends is kept, learned from or cached.
+
     Either 'file' or 'url' must be provided.
     """
     filepath = None
@@ -1406,7 +1581,7 @@ def api_parse():
                 filepath, orig_filename = _download_from_url(file_url, app.config['UPLOAD_FOLDER'])
                 _, ext = os.path.splitext(orig_filename)
                 ext = ext.lower()
-                print(f"  [API] Downloaded from URL: {orig_filename} ({ext})")
+                print(f"  [API] Downloaded from URL ({ext})")
             except ValueError as e:
                 return jsonify({
                     'error': str(e),
@@ -1437,11 +1612,12 @@ def api_parse():
                 'code': 'UNSUPPORTED_FORMAT',
             }), 400
 
-        # 3. Extract text
+        # 3. Extract text, and remember how it was read (pdf_text / ocr / text / docx) and the page count
         password = request.form.get('password', '').strip() or None
+        read_info = {'method': 'pdf_text', 'pages': None}
 
         try:
-            raw_text = extract_text(filepath, ext, password=password)
+            raw_text, read_info = extract_text_info(filepath, ext, password=password)
         except ValueError as e:
             error_msg = str(e)
             if 'password' in error_msg.lower():
@@ -1464,7 +1640,12 @@ def api_parse():
         if bank_code == 'auto':
             bank_code = detect_bank(raw_text)
 
-        # 5. Parse (structured first, then LLM fallback)
+        # 5. Parse: a bank's own parser first. AI only when the caller allows it
+        #    (allow_ai, default true for the public API; Karr always sends false,
+        #    so a client's statement never reaches the parser's own key), and
+        #    never learned from on this path: the cache and learned/ hold nothing
+        #    an API caller sent (bsp-1).
+        allow_ai = _form_flag(request.form.get('allow_ai'), default=True)
         result = None
 
         if bank_code:
@@ -1476,24 +1657,31 @@ def api_parse():
                 else:
                     result = None
 
-        if not result and llm_parser.is_available():
-            result = llm_parser.parse_with_llm(raw_text)
+        if not result and allow_ai and llm_parser.is_available():
+            result = llm_parser.parse_with_llm(raw_text, persist=False)
             if result and result.get('transactions'):
                 used_llm = True
             else:
                 result = None
 
         if not result:
+            ai_available = llm_parser.is_available()
             return jsonify({
-                'error': 'Could not parse this bank statement. The format may not be supported yet.',
+                'error': ("No parser knows this statement's layout, and AI was not allowed (allow_ai=false)."
+                          if ai_available and not allow_ai
+                          else 'Could not parse this bank statement. The format may not be supported yet.'),
                 'code': 'PARSE_FAILED',
+                'ai_available': ai_available,
+                'ai_allowed': allow_ai,
+                'parser_version': PARSER_VERSION,
             }), 400
 
         # 6. Build full transaction list
         transactions = result['transactions']
         output_format = request.form.get('format', 'json').lower()
 
-        # Balance verification
+        # Balance verification. A balance post_process computed is not checked:
+        # it would match by construction and count as proof of nothing.
         _parse_balance_value = _pbv  # use centralized version
         prev_bal = None
         v_match = 0
@@ -1504,6 +1692,8 @@ def api_parse():
             bal = _parse_balance_value(t['balance'])
             if idx == 0:
                 chk = '○ Opening'
+            elif t.get('balance_source') == 'computed':
+                chk = '○ Computed'
             elif prev_bal is not None and bal is not None:
                 try:
                     w = float(str(t['withdrawal']).replace(',', '')) if t['withdrawal'] else 0
@@ -1536,34 +1726,16 @@ def api_parse():
 
         v_pct = (v_match / v_total * 100) if v_total > 0 else 0
 
-        # 7. Build response
-        response_data = {
-            'success': True,
-            'bank_name': result['bank_name'],
-            'account_info': result.get('account_info', {}),
-            'total_transactions': len(transactions),
-            'period': result.get('period', 'N/A'),
-            'parsed_by': 'ai' if used_llm else 'structured',
-            'verification': {
-                'matched': v_match,
-                'total': v_total,
-                'percent': round(v_pct, 1),
-            },
-            'transactions': [
-                {
-                    'date': t['date'],
-                    'particulars': t['particulars'],
-                    'chq_ref': t['chq_ref'],
-                    'withdrawal': t['withdrawal'],
-                    'deposit': t['deposit'],
-                    'balance': t['balance'],
-                }
-                for t in transactions
-            ],
-            'preview': preview_rows,
-            'warnings': result.get('warnings', []),
-            'ocr_corrections': result.get('ocr_corrections', []),
-        }
+        # 7. Build response (contract/v1: today's fields kept, v1 fields beside them)
+        response_data = build_api_response(
+            result, transactions,
+            used_llm=used_llm,
+            read_method=read_info.get('method'),
+            pages_seen=read_info.get('pages'),
+            pages_stated=_pages_stated(raw_text),
+            verification={'matched': v_match, 'total': v_total, 'percent': round(v_pct, 1)},
+            preview=preview_rows,
+        )
 
         # Optional: generate Excel/CSV and include download link
         if output_format == 'excel':
@@ -1605,10 +1777,15 @@ def api_parse():
 @app.route('/api/v1/download/<filename>')
 @require_api_key
 def api_download(filename):
-    """Download a generated file (auth required). Reuses the main download logic."""
-    filepath = os.path.join(app.config['OUTPUT_FOLDER'], filename)
+    """
+    Download a generated file (auth required). Reuses the main download logic.
+    An API-made file (API_*) is deleted once it has been sent: nothing an API
+    caller asked for outlives its one download (the hourly sweep is the
+    backstop for a download that never came).
+    """
+    filepath = os.path.join(app.config['OUTPUT_FOLDER'], os.path.basename(filename))
     if not os.path.exists(filepath):
-        return jsonify({'error': 'File not found. It may have expired (files are deleted after 1 hour).', 'code': 'NOT_FOUND'}), 404
+        return jsonify({'error': 'File not found. It may have expired (files are deleted after 1 hour, API files after one download).', 'code': 'NOT_FOUND'}), 404
 
     if filename.endswith('.xlsx'):
         mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -1624,6 +1801,11 @@ def api_download(filename):
 
     with open(filepath, 'rb') as f:
         data = f.read()
+    if os.path.basename(filepath).startswith('API_'):
+        try:
+            os.remove(filepath)
+        except OSError:
+            pass
 
     response = make_response(data)
     response.headers['Content-Type'] = mimetype

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tohundguide.com/tools/bankstatementparser/contract/v1/response.schema.json",
+  "title": "bankstatementparser /api/v1/parse response (v1)",
+  "description": "The source. Karr keeps a copy under tests/contract/bankstatementparser/ and a test on each side reads the same sample-v1-scan.json, so whichever side drifts goes red. /api/v1 only grows: a breaking change is /api/v2.",
+  "type": "object",
+  "required": ["success"],
+  "properties": {
+    "success": { "type": "boolean" },
+    "parser_version": { "type": "string", "description": "also the X-Parser-Version header on every /api/v1 answer" },
+    "bank_name": { "type": ["string", "null"] },
+    "account_number": { "type": ["string", "null"], "description": "as printed: whole, or masked" },
+    "ifsc": { "type": ["string", "null"] },
+    "account_info": { "type": "object", "description": "pre-v1 shape: account_number, ifsc, opening_balance, closing_balance, holder, branch" },
+    "opening_balance": { "type": ["string", "number", "null"], "description": "as printed; null when the statement prints none" },
+    "closing_balance": { "type": ["string", "number", "null"] },
+    "total_transactions": { "type": "integer" },
+    "period": { "type": "string", "description": "pre-v1: the period as a sentence ('01/04/2025 to 30/04/2025') or 'N/A'" },
+    "period_from": { "type": ["string", "null"], "description": "the period PRINTED on the statement, YYYY-MM-DD; null when it prints none" },
+    "period_to": { "type": ["string", "null"] },
+    "pages": { "type": "object", "properties": { "seen": { "type": ["integer", "null"] }, "stated": { "type": ["integer", "null"], "description": "the 'of N' the statement prints" } } },
+    "read_by": { "enum": ["pdf_text", "ocr", "text", "docx", "ai"] },
+    "parsed_by": { "enum": ["structured", "ai"] },
+    "verification": { "type": "object", "properties": { "matched": { "type": "integer" }, "total": { "type": "integer" }, "percent": { "type": "number" } }, "description": "computed balances are not counted" },
+    "filled": { "type": "object", "properties": { "balances": { "type": "integer" }, "amounts": { "type": "integer" } }, "description": "figures the parser made up: balances computed from the one before, amounts inferred from the balance movement" },
+    "transactions": { "type": "array", "items": { "$ref": "#/$defs/line" } },
+    "preview": { "type": "array", "items": { "type": "object" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "ocr_corrections": { "type": "array" }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "required": ["seq", "date", "particulars", "chq_ref", "withdrawal", "deposit", "balance"],
+      "properties": {
+        "seq": { "type": "integer", "description": "1-based, in the order the parser answers" },
+        "date": { "type": "string", "description": "DD-MM-YYYY as the bank prints it" },
+        "value_date": { "type": ["string", "null"] },
+        "particulars": { "type": "string" },
+        "chq_ref": { "type": "string" },
+        "withdrawal": { "type": ["string", "number"] },
+        "deposit": { "type": ["string", "number"] },
+        "balance": { "type": ["string", "number", "null"] },
+        "balance_source": { "enum": ["computed"], "description": "present when the statement printed no balance here and the parser computed it; a reader never counts such a balance as evidence" },
+        "amount_source": { "enum": ["inferred"], "description": "present when the parser took the amount from the balance movement" }
+      }
+    }
+  }
+}
