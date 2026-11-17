@@ -65,11 +65,24 @@ class SBIParser(BaseBankParser):
     # One line per row: DD/MM/YYYY dates, branch code, ONE amount, balance.
     # The Finacle path below only recognises DD-MM-YYYY date lines, so this
     # layout produced 0 rows.
-    INB_HEADER_RE = re.compile(r'Txn\s+Date\s+Value\s+Date\s+Description\s+Ref\s+No', re.IGNORECASE)
+    INB_HEADER_RE = re.compile(r'Txn\s+Date\s+Value\s+Date\s+Description\s+Ref\s+No'
+                               r'|Txn\s+Value\s+Description\s+Ref\s+Branch\s+Debit\s+Credit\s+Balance', re.IGNORECASE)
     INB_ROW_RE = re.compile(
         r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*?)\s*(?<!\S)(\d{1,6})\s+'
         r'(-?[\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$'
     )
+
+    # The same layout printed with "9 May" dates, the year on the row's second line:
+    #   9 May 9 May TO NEFT INB: 99999 99,999.99 9,999.99
+    #   2025 2025 TRANSFER- CNAFCTIDK
+    # and the opening as "Balance as on 1 May 2025 :12,345.67" (feedback e62be4cb9b, 17 Nov 2026).
+    INB_DM_ROW_RE = re.compile(
+        r'^(\d{1,2}\s+[A-Za-z]{3})\s+(\d{1,2}\s+[A-Za-z]{3})\s+(.*?)\s*(?<!\S)(\d{1,6})\s+'
+        # A figure can print with one decimal ("1,00,000.0"): the PDF drops a trailing nought.
+        r'(-?[\d,]+\.\d{1,2})\s+(-?[\d,]+\.\d{1,2})\s*$'
+    )
+    INB_YEARS_RE = re.compile(r'^(\d{4})\s+(\d{4})\b\s*(.*)$')
+    MONTHS = {m: i for i, m in enumerate(['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], 1)}
 
     def _is_inb_format(self, raw_text: str) -> bool:
         return bool(self.INB_HEADER_RE.search(raw_text)) or \
@@ -80,7 +93,7 @@ class SBIParser(BaseBankParser):
             m = re.search(label + r'\s*:\s*(?:\(cid:\d+\))?\s*(.+)', raw_text, re.IGNORECASE)
             return m.group(1).strip() if m else ''
 
-        ob = re.search(r'Opening\s+Balance\s+as\s+on\s+[^:]*:\s*(?:\(cid:\d+\))?\s*(-?[\d,]+\.\d{2})',
+        ob = re.search(r'(?:Opening\s+)?Balance\s+as\s+on\s+[^:\n]*:\s*(?:\(cid:\d+\))?\s*(-?[\d,]+\.\d{2})',
                        raw_text, re.IGNORECASE)
         opening = float(ob.group(1).replace(',', '')) if ob else None
         per = re.search(r'Account\s+Statement\s+from\s+(.+?)\s+to\s+(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
@@ -109,6 +122,28 @@ class SBIParser(BaseBankParser):
             if not started or skip_re.match(s):
                 continue
             m = self.INB_ROW_RE.match(s)
+            dm = None if m else self.INB_DM_ROW_RE.match(s)
+            if dm:
+                if txn:
+                    transactions.append(txn)
+                amount = f"{float(dm.group(5).replace(',', '').lstrip('-')):.2f}"
+                balance = float(dm.group(6).replace(',', ''))
+                txn = {'date': '', 'particulars': dm.group(3), 'chq_ref': '', 'withdrawal': '', 'deposit': '',
+                       'balance': f"{balance:.2f}", '_day': dm.group(1)}
+                if prev_bal is not None and balance > prev_bal + 1e-9:
+                    txn['deposit'] = amount
+                else:
+                    txn['withdrawal'] = amount
+                prev_bal = balance
+                continue
+            if txn and txn.get('_day') and not txn['date']:
+                y = self.INB_YEARS_RE.match(s)
+                if y:
+                    day, mon = txn['_day'].split()
+                    txn['date'] = f"{int(day):02d}-{self.MONTHS.get(mon[:3].lower(), 0):02d}-{y.group(1)}"
+                    if y.group(3):
+                        txn['particulars'] += ' ' + y.group(3)
+                    continue
             if m:
                 if txn:
                     transactions.append(txn)
@@ -129,6 +164,9 @@ class SBIParser(BaseBankParser):
             transactions.append(txn)
         for t in transactions:
             t['particulars'] = re.sub(r'\s+', ' ', t['particulars']).strip()
+            t.pop('_day', None)
+        # A "9 May" row whose year line never came cannot be dated: it is left out, never guessed.
+        transactions = [t for t in transactions if t['date']]
         if transactions:
             account_info['closing_balance'] = transactions[-1]['balance']
 

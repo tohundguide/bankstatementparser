@@ -51,8 +51,191 @@ class ICICIBankParser(BaseBankParser):
     ]
 
 
+    # ── Format 3: "Statement of Transactions in Saving Account no. ..." (feedback 415dbedc2a, 17 Nov 2026) ──
+    #   PAYEE NAME                              <- the line before a row belongs to it
+    #   12 01.04.2025 25000.00 412345.67        <- S No, date, ONE amount, balance (a cheque no. may sit between)
+    #   BIL/INFT/FD12345678/ PAYEE              <- the remarks, one or more lines
+    # No opening balance is printed: each side follows from the balance, the first row's from its remarks,
+    # and that one figure is marked amount_source 'inferred'.
+    SAVINGS_HEAD_RE = re.compile(r'Statement of Transactions in Saving(?:s)? Account', re.IGNORECASE)
+    SAVINGS_ROW_RE = re.compile(r'^(\d{1,4})\s+(\d{2}\.\d{2}\.\d{4})\s+(?:(\S+)\s+)?([\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$')
+    SAVINGS_NOISE_RE = re.compile(r'^(www\.icici|Please call from|Never share your OTP|Transaction Withdrawal Deposit|S No\.\s+Cheque|Date Amount \(INR\)|Sincerly|Sincerely|Team ICICI|This is a system generated|Legends for transactions|\d{1,3}$)', re.IGNORECASE)
+    CREDIT_HINT_RE = re.compile(r'^(NEFT-|RTGS-|IMPS/P2A|MMT/IMPS/\d+/[^/]*/?CR|INT\.?PD|.*\bInterest\b|.*\bCREDIT\b|BY\b|CLG/|CMS/)', re.IGNORECASE)
+
+    def _parse_savings_statement(self, raw_text: str) -> Dict:
+        lines = [l.strip() for l in raw_text.split('\n')]
+        legend = next((i for i, l in enumerate(lines) if l.lower().startswith('legends for transactions')), len(lines))
+        lines = [l for l in lines[:legend] if l and not self.SAVINGS_NOISE_RE.match(l)]
+        start = next((i for i, l in enumerate(lines) if l.startswith('Date Amount')), 0)
+        rows, blocks = [], []
+        pending: List[str] = []
+        for l in lines[start:]:
+            m = self.SAVINGS_ROW_RE.match(l)
+            if m:
+                # The last line before a row is its payee; the lines before that are the previous row's remarks.
+                name = pending[-1] if pending else ''
+                if rows:
+                    blocks[-1].extend(pending[:-1] if pending else [])
+                rows.append(m)
+                blocks.append([name] if name else [])
+                pending = []
+            else:
+                pending.append(l)
+        if rows:
+            blocks[-1].extend(pending)
+        transactions: List[Dict] = []
+        prev = None
+        for k, (m, block) in enumerate(zip(rows, blocks)):
+            d, mo, y = m.group(2).split('.')
+            amount = m.group(4).replace(',', '')
+            balance = float(m.group(5).replace(',', ''))
+            text = re.sub(r'\s+', ' ', ' '.join(block)).strip()
+            remarks = ' '.join(block[1:]) if len(block) > 1 else text
+            t = {'date': f'{d}-{mo}-{y}', 'particulars': text, 'chq_ref': m.group(3) or '', 'withdrawal': '', 'deposit': '',
+                 'balance': f'{balance:.2f}'}
+            if prev is not None:
+                if balance > prev + 1e-9:
+                    t['deposit'] = amount
+                else:
+                    t['withdrawal'] = amount
+            else:
+                t['deposit' if self.CREDIT_HINT_RE.match(remarks.strip()) else 'withdrawal'] = amount
+                t['amount_source'] = 'inferred'
+            prev = balance
+            transactions.append(t)
+        first = transactions[0] if transactions else None
+        opening = ''
+        if first:
+            f_amt = float(first['deposit'] or first['withdrawal'])
+            opening = f"{float(first['balance']) - f_amt if first['deposit'] else float(first['balance']) + f_amt:.2f}"
+        acct = re.search(r'Saving(?:s)? Account no\.\s*(\d+)', raw_text, re.IGNORECASE)
+        per = re.search(r'for the period\s+(.+?)\s+-\s+(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
+        return {
+            'bank_name': self.BANK_NAME, 'bank_code': self.BANK_CODE,
+            'account_info': {'account_number': acct.group(1) if acct else '', 'account_holder': '', 'ifsc': '',
+                             'opening_balance': opening, 'closing_balance': transactions[-1]['balance'] if transactions else ''},
+            'period': f"{per.group(1)} to {per.group(2)}" if per else 'N/A',
+            'transactions': transactions,
+        }
+
+    # ── Format 4: "Account statement ... S.no Transaction ID Transaction date ..." (feedback 74f1da4cf5) ──
+    #   3 S1234567 12-Sep- MMT/IMPS/5 125000.00 -        <- withdrawal, deposit "-" (or "-" then deposit)
+    #   2025 123456789 1234567.89                         <- the year, more of the row, the balance
+    # In the PDF's text the "-" of the empty column does not keep its place, so each side follows from the
+    # balance (as every one-amount layout here); the first row's from where its "-" stands, marked inferred.
+    CURRENT_HEAD_RE = re.compile(r'S\.no\s+Transaction\s+Transaction\s+Cheque\s+No\s+Description\s+Withdrawal\s+Deposit', re.IGNORECASE)
+    CURRENT_ROW_RE = re.compile(r'^(\d{1,5})\s+(\S+)\s+(\d{1,2}-[A-Za-z]{3}-)\s*(.*?)\s+([\d,]+\.\d{2}|-)\s+([\d,]+\.\d{2}|-)\s*$')
+    CURRENT_YEAR_RE = re.compile(r'^(\d{4})\b\s*(.*?)\s*(-?[\d,]+\.\d{2})\s*$')
+    # A row whose balance fits prints it on the row's own line (below nil too), and its year line has none:
+    #   41 S1234567 16-Oct- RTGS- 1250000.00 -987654.32
+    #   2025 JAKAR2025
+    CURRENT_OD_ROW_RE = re.compile(r'^(\d{1,5})\s+(\S+)\s+(\d{1,2}-[A-Za-z]{3}-)\s*(.*?)\s+([\d,]+\.\d{2})\s+(-[\d,]+\.\d{2})\s*$')
+    CURRENT_YEAR_ONLY_RE = re.compile(r'^(\d{4})\b\s*(.*)$')
+    CURRENT_NOISE_RE = re.compile(r'^(Generated on\s*:|S\.no\s+Transaction|ID\s+date\s+\(Dr\))', re.IGNORECASE)
+    MON = {m: i for i, m in enumerate(['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], 1)}
+
+    def _parse_current_statement(self, raw_text: str) -> Dict:
+        transactions: List[Dict] = []
+        t: Optional[Dict] = None
+        started = False
+        for raw in raw_text.split('\n'):
+            l = raw.strip()
+            if not l:
+                continue
+            if self.CURRENT_HEAD_RE.search(l):
+                started = True
+                continue
+            if not started or self.CURRENT_NOISE_RE.match(l):
+                continue
+            m = self.CURRENT_ROW_RE.match(l) or self.CURRENT_OD_ROW_RE.match(l)
+            if m and m.group(5) != '-':
+                if t:
+                    transactions.append(t)
+                # The row's amount, then "-" (its balance on the year line) or the balance itself, which the
+                # PDF puts on the row's own line whenever it fits (above or below nil).
+                tail = m.group(6)
+                t = {'date': '', '_dm': m.group(3), 'particulars': m.group(4), 'chq_ref': m.group(2),
+                     'withdrawal': m.group(5).replace(',', ''), 'deposit': '',
+                     # "-123.45" is either a balance below nil or the empty column's "-" glued to the balance:
+                     # the text cannot say which, so the balance chain decides below (_glued).
+                     'balance': '' if tail == '-' else f"{float(tail.replace(',', '')):.2f}",
+                     '_glued': tail != '-'}
+                continue
+            if t and not t['date'] and t['balance']:
+                y = self.CURRENT_YEAR_ONLY_RE.match(l)
+                if y:
+                    day, mon, _ = t['_dm'].split('-')
+                    t['date'] = f"{int(day):02d}-{self.MON.get(mon[:3].lower(), 0):02d}-{y.group(1)}"
+                    if y.group(2):
+                        t['chq_ref'] += y.group(2)
+                    continue
+            if t and not t['date']:
+                y = self.CURRENT_YEAR_RE.match(l)
+                if y:
+                    day, mon, _ = t['_dm'].split('-')
+                    t['date'] = f"{int(day):02d}-{self.MON.get(mon[:3].lower(), 0):02d}-{y.group(1)}"
+                    t['balance'] = f"{float(y.group(3).replace(',', '')):.2f}"
+                    if y.group(2):
+                        t['chq_ref'] += y.group(2)
+                    continue
+            if t:
+                t['particulars'] += ' ' + l
+        if t:
+            transactions.append(t)
+        transactions = [x for x in transactions if x['date']]
+        # A balance printed on the row's own line loses or gains its minus in the PDF's text (a glued "-" from
+        # the empty column, or a minus dropped): the sign that lets the row's own amount carry the balance from
+        # the row before (or, for the first row, to the row after) is the one; when both or neither do, the
+        # printed sign stands.
+        def fits(b_from: float, b_to: float, amt: str) -> bool:
+            return abs(abs(b_to - b_from) - float(amt or 0)) < 0.005
+        for k, x in enumerate(transactions):
+            if not x.pop('_glued', False):
+                continue
+            neg = -abs(float(x['balance'])); pos = abs(float(x['balance']))
+            amt = x['withdrawal'] or x['deposit']
+            if k > 0:
+                p_bal = float(transactions[k - 1]['balance'])
+                if fits(p_bal, pos, amt) != fits(p_bal, neg, amt):
+                    x['balance'] = f"{pos if fits(p_bal, pos, amt) else neg:.2f}"
+            elif k + 1 < len(transactions):
+                n = transactions[k + 1]
+                n_amt = n['withdrawal'] or n['deposit']
+                if fits(pos, float(n['balance']), n_amt) != fits(neg, float(n['balance']), n_amt):
+                    x['balance'] = f"{pos if fits(pos, float(n['balance']), n_amt) else neg:.2f}"
+        prev = None
+        for x in transactions:
+            x.pop('_glued', None)
+            x.pop('_dm', None)
+            x['particulars'] = re.sub(r'\s+', ' ', x['particulars']).strip()
+            amount = x['withdrawal'] or x['deposit']
+            bal = float(x['balance'])
+            if prev is None:
+                x['amount_source'] = 'inferred'
+            else:
+                x['withdrawal'], x['deposit'] = ('', amount) if bal > prev + 1e-9 else (amount, '')
+            prev = bal
+        opening = ''
+        if transactions:
+            f = transactions[0]
+            opening = f"{float(f['balance']) + float(f['withdrawal'] or 0) - float(f['deposit'] or 0):.2f}"
+        acct = re.search(r'Account number:\s*(\d+)', raw_text)
+        ifsc = re.search(r'IFSC code:\s*(ICIC\w{7})', raw_text)
+        per = re.search(r'Statement of transactions from\s+(.+?)\s+-\s+(.+?)\s*$', raw_text, re.IGNORECASE | re.MULTILINE)
+        return {
+            'bank_name': self.BANK_NAME, 'bank_code': self.BANK_CODE,
+            'account_info': {'account_number': acct.group(1) if acct else '', 'account_holder': '', 'ifsc': ifsc.group(1) if ifsc else '',
+                             'opening_balance': opening, 'closing_balance': transactions[-1]['balance'] if transactions else ''},
+            'period': f"{per.group(1)} to {per.group(2)}" if per else 'N/A',
+            'transactions': transactions,
+        }
+
     def parse(self, raw_text: str) -> Dict:
         """Parse ICICI Bank statement text into structured data."""
+        if self.SAVINGS_HEAD_RE.search(raw_text[:600]):
+            return self._parse_savings_statement(raw_text)
+        if self.CURRENT_HEAD_RE.search(raw_text[:2000]):
+            return self._parse_current_statement(raw_text)
         # Check for "Detailed Statement" format markers
         # Must NOT match the simple format which contains "Transaction date"
         first_500 = raw_text[:500]

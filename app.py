@@ -315,10 +315,32 @@ def build_api_response(result, transactions, *, used_llm, read_method, pages_see
 import threading
 import time as _time
 
+# A statement shared through "report a problem" is kept only to add its bank, and never past this many days:
+# the words beside the button say so (17 Nov 2026), and this is what makes them true.
+FEEDBACK_KEEP_DAYS = 30
+
+
+def _sweep_feedback(now=None):
+    """Delete every shared statement older than FEEDBACK_KEEP_DAYS; returns how many were deleted."""
+    import shutil
+    cutoff = (now or _time.time()) - FEEDBACK_KEEP_DAYS * 86400
+    gone = 0
+    root = app.config['FEEDBACK_FOLDER']
+    try:
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                gone += 1
+    except OSError:
+        pass
+    return gone
+
+
 def _cleanup_old_files():
-    """Delete upload/output files older than 1 hour (runs in background)."""
+    """Delete upload/output files older than 1 hour, and shared statements past their days (runs in background)."""
     while True:
-        _time.sleep(3600)  # Run every hour
+        _sweep_feedback()
         cutoff = _time.time() - 3600
         for folder in [app.config['UPLOAD_FOLDER'], app.config['OUTPUT_FOLDER']]:
             try:
@@ -328,6 +350,7 @@ def _cleanup_old_files():
                         os.remove(fp)
             except OSError:
                 pass
+        _time.sleep(3600)  # Run every hour
 
 _cleanup_thread = threading.Thread(target=_cleanup_old_files, daemon=True)
 _cleanup_thread.start()
