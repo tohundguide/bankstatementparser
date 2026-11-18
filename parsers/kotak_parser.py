@@ -182,8 +182,92 @@ class KotakParser(BaseBankParser):
             'transactions': transactions,
         }
 
+    # ── Signed layout ("Account Statement", net banking 2025) ──
+    #   # TRANSACTION DATE VALUE DATE TRANSACTION DETAILS CHQ / REF NO. DEBIT/CREDIT(₹) BALANCE(₹)
+    #   1 02 Apr 2024                                        <- serial and transaction date
+    #   05:50 PM                                             <- the time
+    #   02 Apr 2024 IB: ETAX ... GBM-0030564822 -33,969.00 4,66,798.60   <- value date, details, signed amount, balance
+    # One signed amount column (+ credit, - debit), the balance may be negative (overdraft), the
+    # details and the reference wrap over lines before the amounts, and a serial of 100 or more is
+    # split over two lines ("10" / "0") ahead of its date. No opening is printed: it is the first
+    # balance less the first row's signed amount.
+    SIGNED_DATE_RE = re.compile(r'^(?:\d{1,4}\s+)?(\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4})$')
+    SIGNED_TIME_RE = re.compile(r'^\d{1,2}:\d{2}\s*[AP]M$', re.I)
+    SIGNED_VALUE_RE = re.compile(r'^(\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4})\s*(.*)$')
+    SIGNED_AMOUNTS_RE = re.compile(r'^(.*?)\s*([+-][\d,]+\.\d{2})\s+(-?[\d,]+\.\d{2})\s*$')
+    SIGNED_REF_RE = re.compile(
+        r'(?:^|\s|(?<=[A-Za-z0-9.]))(GBM-\d+|KKBKH\d+(?: \d)?|FCM-?[A-Z0-9]{6,}|UPI-\d+|VPI-\d+|MB-\d+|'
+        r'NEFTINW-?\d+|RTGSINW-?\d+|IMPS-?\d+|TIP-[0-9a-f-]+(?: [0-9a-f]{1,4})?|CLIN-\d+|\d{6,}TO)$')
+
+    def _is_signed_format(self, raw_text: str) -> bool:
+        return re.search(r'TRANSACTION\s+DATE.*DEBIT\s*/\s*CREDIT', raw_text) is not None
+
+    def _parse_signed_format(self, raw_text: str) -> Dict:
+        acct = re.search(r'Account\s*#\s*(\d+)\s*([A-Z]+)?', raw_text)
+        ifsc = re.search(r'\bKKBK0\w{6}\b', raw_text)
+        branch = re.search(r'^Branch\s+(.+)$', raw_text, re.MULTILINE)
+        per = re.search(r'(\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4})\s+-\s+(\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4})', raw_text)
+        transactions: List[Dict] = []
+        row: Optional[Dict] = None          # the row being read: its date and the detail lines so far
+        for line in raw_text.split('\n'):
+            s = line.strip()
+            if not s:
+                continue
+            d = self.SIGNED_DATE_RE.match(s)
+            if d:
+                row = {'date': self._normalize_date(d.group(1)), 'parts': [], 'value_seen': False}
+                continue
+            if row is None:
+                continue                     # a page header, a footer, a split serial
+            if self.SIGNED_TIME_RE.match(s):
+                continue
+            if not row['value_seen']:
+                v = self.SIGNED_VALUE_RE.match(s)
+                if v:
+                    row['value_seen'] = True
+                    s = v.group(2)
+                    if not s:
+                        continue
+            a = self.SIGNED_AMOUNTS_RE.match(s)
+            if a:
+                if a.group(1):
+                    row['parts'].append(a.group(1))
+                text = re.sub(r'\s+', ' ', ' '.join(row['parts'])).strip()
+                ref = ''
+                rm = self.SIGNED_REF_RE.search(text)
+                if rm:
+                    ref = rm.group(1).replace(' ', '')
+                    text = text[:rm.start(1)].strip()
+                amount = a.group(2).replace(',', '')
+                transactions.append({
+                    'date': row['date'], 'particulars': text, 'chq_ref': ref,
+                    'withdrawal': amount[1:] if amount.startswith('-') else '',
+                    'deposit': amount[1:] if amount.startswith('+') else '',
+                    'balance': f"{float(a.group(3).replace(',', '')):.2f}",
+                })
+                row = None
+                continue
+            row['parts'].append(s)
+        opening = ''
+        if transactions:
+            t0 = transactions[0]
+            opening = f"{float(t0['balance']) + float(t0['withdrawal'] or 0) - float(t0['deposit'] or 0):.2f}"
+        return {
+            'bank_name': self.BANK_NAME, 'bank_code': self.BANK_CODE,
+            'account_info': {
+                'account_number': acct.group(1) if acct else '', 'account_holder': '',
+                'branch': branch.group(1).strip() if branch else '', 'ifsc': ifsc.group(0) if ifsc else '',
+                'type': (acct.group(2) or '') if acct else '',
+                'opening_balance': opening, 'closing_balance': transactions[-1]['balance'] if transactions else '',
+            },
+            'period': f"{self._normalize_date(per.group(1))} to {self._normalize_date(per.group(2))}" if per else 'N/A',
+            'transactions': transactions,
+        }
+
     def parse(self, raw_text: str) -> Dict:
         """Parse Kotak Bank statement text into structured data."""
+        if self._is_signed_format(raw_text):
+            return self._parse_signed_format(raw_text)
         if self._is_new_format(raw_text):
             return self._parse_new_format(raw_text)
 

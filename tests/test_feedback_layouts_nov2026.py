@@ -187,3 +187,88 @@ def test_kvb_debit_and_credit_read_directly_and_known_as_kvb():
     assert tx[1]['particulars'] == 'CASH DEP-SELF-.-TOWN' and tx[1]['date'] == '03-10-2026'
     assert tx[2]['particulars'] == 'NEFT DR-KVBLH26123456789-Some trader-ICIC0001'
     chain(r)
+
+
+KOTAK_SIGNED_TEXT = """Account Statement Account # 1234567890 CURRENT
+Branch Demo Town
+01 Apr 2026 - 31 Mar 2027
+Demo Works Private Limited
+IFSC KKBK0001234
+# TRANSACTION DATE VALUE DATE TRANSACTION DETAILS CHQ / REF NO. DEBIT/CREDIT(₹) BALANCE(₹)
+1 02 Apr 2026
+05:50 PM
+02 Apr 2026 IB: ETAX EPFONEW 0012345678 GBM-0012345678 -2,000.00 48,000.00
+2 02 Apr 2026
+08:21 PM
+02 Apr 2026 IB:DEMO PETTY CASH KKBKH2600000001
+3
+-1,000.00 47,000.00
+3 03 Apr 2026
+03:52 AM
+02 Apr 2026 Sweep Trf From: 8000000001 +10,000.00 57,000.00
+4 09 Apr 2026
+11:04 AM
+09 Apr 2026 NEFT IN1ON26040900ABC DEMO
+BUYER CONSULTING ENGI
+NEFTINW0800000001+5,000.00 62,000.00
+5 12 Apr 2026
+11:12 AM
+12 Apr 2026 MB:Demo ESIC reimbursement Apr
+24
+KKBKH2600000002
+6
+-500.00 61,500.00
+Statement generated on 01 May 2027, 07:46 AM Page 1 of2
+DEMO WORKS PRIVATE
+LIMITED
+Account Statement 01 Apr 2026 - 31 Mar 2027
+# TRANSACTION DATE VALUE DATE TRANSACTION DETAILS CHQ / REF NO. DEBIT/CREDIT(₹) BALANCE(₹)
+6 25 Jun 2026
+12:40 PM
+25 Jun 2026 8337MIS260000001 CRE001 DEMO
+OVERSEAS SA DE CV
+TIP-abc12345-1234-
+5e
++20,000.00 81,500.00
+7 05 Aug 2026
+02:16 PM
+05 Aug 2026 JULY26SALARYDEMO.XLS2608050ABCDEFCM260805C05CAC-90,000.00 -8,500.00
+10
+0
+02 Feb 2027
+01:24 AM
+01 Feb 2027 Int.Coll:1234567890:02-01-2027 to 01-
+02-2027
+-100.00 -8,600.00
+10
+1
+19 Mar 2027
+09:09 AM
+19 Mar 2027 Recd:IMPS/600000000001/DEMO
+PERSON/KKBK/X0001/NA
+IMPS600000000002+10,000.00 1,400.00
+Statement generated on 01 May 2027, 07:46 AM Page 2 of2
+"""
+
+
+def test_kotak_signed_amount_layout_with_split_serials_and_an_overdraft():
+    from parsers.kotak_parser import KotakParser
+    assert detect_bank(KOTAK_SIGNED_TEXT) == 'kotak_bank'
+    r = KotakParser().parse(KOTAK_SIGNED_TEXT)
+    tx = r['transactions']
+    assert r['account_info']['opening_balance'] == '50000.00'
+    assert r['account_info']['account_number'] == '1234567890' and r['account_info']['type'] == 'CURRENT'
+    assert [t['balance'] for t in tx] == ['48000.00', '47000.00', '57000.00', '62000.00', '61500.00',
+                                         '81500.00', '-8500.00', '-8600.00', '1400.00']
+    assert [(t['withdrawal'], t['deposit']) for t in tx][:4] == [('2000.00', ''), ('1000.00', ''), ('', '10000.00'), ('', '5000.00')]
+    assert tx[0]['date'] == '02-04-2026' and tx[7]['date'] == '02-02-2027'
+    assert (tx[0]['chq_ref'], tx[0]['particulars']) == ('GBM-0012345678', 'IB: ETAX EPFONEW 0012345678')
+    assert (tx[1]['chq_ref'], tx[1]['particulars']) == ('KKBKH26000000013', 'IB:DEMO PETTY CASH')
+    assert tx[2]['chq_ref'] == '' and tx[2]['particulars'] == 'Sweep Trf From: 8000000001'
+    assert (tx[3]['chq_ref'], tx[3]['particulars']) == ('NEFTINW0800000001', 'NEFT IN1ON26040900ABC DEMO BUYER CONSULTING ENGI')
+    assert tx[4]['particulars'] == 'MB:Demo ESIC reimbursement Apr 24' and tx[4]['chq_ref'] == 'KKBKH26000000026'
+    assert tx[5]['chq_ref'] == 'TIP-abc12345-1234-5e' and tx[5]['particulars'] == '8337MIS260000001 CRE001 DEMO OVERSEAS SA DE CV'
+    assert tx[6]['chq_ref'] == 'FCM260805C05CAC' and tx[6]['withdrawal'] == '90000.00'
+    assert tx[7]['particulars'] == 'Int.Coll:1234567890:02-01-2027 to 01- 02-2027' and tx[7]['chq_ref'] == ''
+    assert tx[8]['chq_ref'] == 'IMPS600000000002' and tx[8]['deposit'] == '10000.00'
+    chain(r)
