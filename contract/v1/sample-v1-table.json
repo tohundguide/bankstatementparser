@@ -1,6 +1,6 @@
 {
   "success": true,
-  "parser_version": "2.4.0",
+  "parser_version": "2.5.0",
   "bank_name": null,
   "account_info": {
     "account_number": "XXXXXX7788",
@@ -14,7 +14,30 @@
   "closing_balance": "11,982.25",
   "total_transactions": 4,
   "txn_count": 4,
-  "layout_fingerprint": "a45503d8b2126fb1",
+  "layout_fingerprint": "cb1a4c370fa1097a",
+  "layout_shape": {
+    "v": 2,
+    "bank": null,
+    "headings": [
+      "date",
+      "date",
+      "narration",
+      "reference",
+      "amount",
+      "dr cr",
+      "balance"
+    ],
+    "kinds": [
+      "date",
+      "date",
+      "text",
+      "text",
+      "money",
+      "side",
+      "money"
+    ],
+    "date": "dd/mm/yyyy"
+  },
   "column_map": {
     "reader": "table",
     "columns": [

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 os.environ.setdefault('API_KEYS', 'contract-test-key:ContractTest')
 
 from synth_pdf import money, pdf_bytes, right, statement_pdf  # noqa: E402
-from parsers.table_reader import fingerprint, read_day, read_money, read_table, text_fingerprint  # noqa: E402
+from parsers.table_reader import layout_of_roles, read_day, read_money, read_table, text_layout  # noqa: E402
 from parsers.registry import detect_bank  # noqa: E402
 
 ROWS = [
@@ -256,10 +256,10 @@ def test_read_money():
 
 
 def test_fingerprint_is_the_shape_only():
-    a = text_fingerprint('Name: RAVI KUMAR\nDate Narration Withdrawal Deposit Balance\n', 'table')
-    b = text_fingerprint('Name: ANOTHER PERSON\nDate Narration Withdrawal Deposit Balance\n', 'table')
-    assert a == b == fingerprint('table', ['date', 'narration', 'withdrawal', 'deposit', 'balance'])
-    assert len(a) == 16 and a != text_fingerprint('Date Narration Debit Credit Balance', 'sbi')
+    a = text_layout('Name: RAVI KUMAR\nDate Narration Withdrawal Deposit Balance\n')
+    b = text_layout('Name: ANOTHER PERSON\nDate Narration Withdrawal Deposit Balance\n')
+    assert a == b == layout_of_roles(['date', 'narration', 'withdrawal', 'deposit', 'balance'], None)
+    assert len(a[0]) == 16 and a[0] != text_layout('Date Narration Debit Credit Balance', 'sbi')[0]
 
 
 # ── Through the API ──
@@ -281,7 +281,9 @@ def test_the_api_reads_an_unknown_pdf_by_its_table_and_never_asks_the_ai(monkeyp
     assert body['read_by'] == 'pdf_text' and body['parsed_by'] == 'structured'
     assert body['txn_count'] == 6 and body['total_transactions'] == 6
     assert body['column_map']['reader'] == 'table' and body['column_map']['amounts'] == 'dr_cr'
-    assert body['layout_fingerprint'] == fingerprint('table', ['date', 'date', 'narration', 'reference', 'amount', 'dr_cr', 'balance'])
+    fp, shape = layout_of_roles(['date', 'date', 'narration', 'reference', 'amount', 'dr_cr', 'balance'], body['transactions'][-1]['date'])
+    assert body['layout_shape']['headings'] == shape['headings'] and body['layout_shape']['kinds'] == shape['kinds']
+    assert len(body['layout_fingerprint']) == 16
     assert body['verification'] == {'matched': 5, 'total': 5, 'percent': 100.0}
     assert [(t['date'], t['withdrawal'], t['deposit'], t['balance']) for t in body['transactions']] == WANT
     left = [f for f in os.listdir(parser_app.app.config['UPLOAD_FOLDER']) if f.startswith('api_')]
@@ -300,6 +302,7 @@ def test_an_unread_pdf_says_its_shape(monkeypatch):
     body = res.get_json()
     assert res.status_code == 400 and body['code'] == 'PARSE_FAILED'
     assert len(body['layout_fingerprint']) == 16
+    assert body['layout_shape']['v'] == 2 and 'balance' in body['layout_shape']['headings']
 
 
 # ── Karr's daily watch reads this file every day through the live parser ──

@@ -16,7 +16,20 @@
     "closing_balance": { "type": ["string", "number", "null"] },
     "total_transactions": { "type": "integer" },
     "txn_count": { "type": "integer", "description": "2.4.0: every dated line the parser read, money or not; a reader that keeps fewer says how many it left" },
-    "layout_fingerprint": { "type": ["string", "null"], "description": "2.4.0: the layout's shape (who read it and its headings by kind, sha256, 16 hex); never a word of the customer's. Also on a PARSE_FAILED answer, so an unread shape can be counted" },
+    "layout_fingerprint": { "type": ["string", "null"], "description": "2.5.0: 16 hex of sha256 over the layout_shape's line 'v2|bank|headings|kinds|date' (parsers/layout_shape.py; contract/v1/fingerprint-v2.json); never a word of the customer's. Also on a PARSE_FAILED answer, so an unread shape can be counted" },
+    "layout_shape": {
+      "type": ["object", "null"],
+      "description": "2.5.0: what the fingerprint is taken over: the heading roles as heading words, each column's kind, the date's shape, the bank's code. Also on PARSE_FAILED",
+      "properties": {
+        "v": { "const": 2 },
+        "bank": { "type": ["string", "null"] },
+        "headings": { "type": "array", "items": { "type": "string" } },
+        "kinds": { "type": "array", "items": { "enum": ["date", "money", "side", "text", "empty"] } },
+        "date": { "type": ["string", "null"] }
+      },
+      "required": ["v", "bank", "headings", "kinds", "date"],
+      "additionalProperties": false
+    },
     "column_map": {
       "type": ["object", "null"],
       "description": "2.4.0: how the columns were read",

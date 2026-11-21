@@ -1,0 +1,352 @@
+{
+  "about": "bankbest-i: the layout fingerprint v2 (Karr _shared/bankLayoutShape.ts = parser parsers/layout_shape.py). Asserted byte for byte on both sides.",
+  "sha256": [
+    {
+      "of": "abc",
+      "hex": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    },
+    {
+      "of": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "hex": "aa20c23e3201834050679e1d88941b9a6fed0557c9a705cb2c315e2e63fd486d"
+    },
+    {
+      "of": "v2|||",
+      "hex": "74f6495deca86d773ce0224abb09afe0253f205e9d50e72c74c952288bb4c97f"
+    }
+  ],
+  "cases": [
+    {
+      "name": "two columns, a bank named above",
+      "input": {
+        "headings": [
+          "Date",
+          "Narration",
+          "Chq./Ref.No.",
+          "Value Dt",
+          "Withdrawal Amt.",
+          "Deposit Amt.",
+          "Closing Balance"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "text",
+          "date",
+          "money",
+          "money",
+          "money"
+        ],
+        "first_date": "01/04/25",
+        "order": "dmy",
+        "bank": "hdfc_bank"
+      },
+      "shape": {
+        "v": 2,
+        "bank": "hdfc_bank",
+        "headings": [
+          "date",
+          "narration",
+          "chq ref no",
+          "value dt",
+          "withdrawal amt",
+          "deposit amt",
+          "closing balance"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "text",
+          "date",
+          "money",
+          "money",
+          "money"
+        ],
+        "date": "dd/mm/yy"
+      },
+      "text": "v2|hdfc_bank|date,narration,chq ref no,value dt,withdrawal amt,deposit amt,closing balance|date,text,text,date,money,money,money|dd/mm/yy",
+      "fingerprint": "04da601d808e6f05"
+    },
+    {
+      "name": "signed amount with Dr/Cr, a time under the date",
+      "input": {
+        "headings": [
+          "Txn Date",
+          "Description",
+          "Amount (INR)",
+          "Dr / Cr",
+          "Balance (INR)"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "side",
+          "money"
+        ],
+        "first_date": "01-Apr-2025 10:35:22",
+        "order": "dmy",
+        "bank": null
+      },
+      "shape": {
+        "v": 2,
+        "bank": null,
+        "headings": [
+          "txn date",
+          "description",
+          "amount inr",
+          "dr cr",
+          "balance inr"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "side",
+          "money"
+        ],
+        "date": "dd-mmm-yyyy t"
+      },
+      "text": "v2||txn date,description,amount inr,dr cr,balance inr|date,text,money,side,money|dd-mmm-yyyy t",
+      "fingerprint": "94c69392f252b9ae"
+    },
+    {
+      "name": "a heading that is not a heading word is kept as its kind",
+      "input": {
+        "headings": [
+          "Date",
+          "RAHUL TRADERS 50100123456789",
+          "Particulars",
+          "12,000.00",
+          "Debit",
+          "Credit",
+          "Balance",
+          ""
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "text",
+          "money",
+          "money",
+          "money",
+          "money",
+          "empty"
+        ],
+        "first_date": "2025-04-01",
+        "order": "dmy",
+        "bank": null
+      },
+      "shape": {
+        "v": 2,
+        "bank": null,
+        "headings": [
+          "date",
+          "#text",
+          "particulars",
+          "#money",
+          "debit",
+          "credit",
+          "balance"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "text",
+          "money",
+          "money",
+          "money",
+          "money"
+        ],
+        "date": "yyyy-mm-dd"
+      },
+      "text": "v2||date,#text,particulars,#money,debit,credit,balance|date,text,text,money,money,money,money|yyyy-mm-dd",
+      "fingerprint": "820a12ca98344049"
+    },
+    {
+      "name": "month first, named month in full",
+      "input": {
+        "headings": [
+          "Posting Date",
+          "Details",
+          "Withdrawals",
+          "Deposits",
+          "Running Bal"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money",
+          "money"
+        ],
+        "first_date": "04/01/2025",
+        "order": "mdy",
+        "bank": "chase_bank"
+      },
+      "shape": {
+        "v": 2,
+        "bank": "chase_bank",
+        "headings": [
+          "posting date",
+          "details",
+          "withdrawals",
+          "deposits",
+          "running bal"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money",
+          "money"
+        ],
+        "date": "mm/dd/yyyy"
+      },
+      "text": "v2|chase_bank|posting date,details,withdrawals,deposits,running bal|date,text,money,money,money|mm/dd/yyyy",
+      "fingerprint": "666bb23eff873cba"
+    },
+    {
+      "name": "a full month name",
+      "input": {
+        "headings": [
+          "Date",
+          "Remarks",
+          "Amount",
+          "Balance"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money"
+        ],
+        "first_date": "1 April, 2025",
+        "order": "dmy",
+        "bank": null
+      },
+      "shape": {
+        "v": 2,
+        "bank": null,
+        "headings": [
+          "date",
+          "remarks",
+          "amount",
+          "balance"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money"
+        ],
+        "date": "dd mmmm yyyy"
+      },
+      "text": "v2||date,remarks,amount,balance|date,text,money,money|dd mmmm yyyy",
+      "fingerprint": "117ceda10eddced7"
+    },
+    {
+      "name": "no headings at all",
+      "input": {
+        "headings": [],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money",
+          "money"
+        ],
+        "first_date": "01.04.2025",
+        "order": "dmy",
+        "bank": null
+      },
+      "shape": {
+        "v": 2,
+        "bank": null,
+        "headings": [
+          "#date",
+          "#text",
+          "#money",
+          "#money",
+          "#money"
+        ],
+        "kinds": [
+          "date",
+          "text",
+          "money",
+          "money",
+          "money"
+        ],
+        "date": "dd.mm.yyyy"
+      },
+      "text": "v2||#date,#text,#money,#money,#money|date,text,money,money,money|dd.mm.yyyy",
+      "fingerprint": "84d1a22d2263dcd0"
+    }
+  ],
+  "dates": [
+    {
+      "cell": "01/04/2025",
+      "dmy": "dd/mm/yyyy",
+      "mdy": "mm/dd/yyyy"
+    },
+    {
+      "cell": "1/4/25",
+      "dmy": "dd/mm/yy",
+      "mdy": "mm/dd/yy"
+    },
+    {
+      "cell": "01-04-2025 10:35",
+      "dmy": "dd-mm-yyyy t",
+      "mdy": "mm-dd-yyyy t"
+    },
+    {
+      "cell": "01.04.2025",
+      "dmy": "dd.mm.yyyy",
+      "mdy": "mm.dd.yyyy"
+    },
+    {
+      "cell": "01-Apr-2025",
+      "dmy": "dd-mmm-yyyy",
+      "mdy": "dd-mmm-yyyy"
+    },
+    {
+      "cell": "01-APR-25",
+      "dmy": "dd-mmm-yy",
+      "mdy": "dd-mmm-yy"
+    },
+    {
+      "cell": "01/Apr/2025",
+      "dmy": "dd/mmm/yyyy",
+      "mdy": "dd/mmm/yyyy"
+    },
+    {
+      "cell": "01 Apr 2025",
+      "dmy": "dd mmm yyyy",
+      "mdy": "dd mmm yyyy"
+    },
+    {
+      "cell": "1 September 2025",
+      "dmy": "dd mmmm yyyy",
+      "mdy": "dd mmmm yyyy"
+    },
+    {
+      "cell": "2025-04-01",
+      "dmy": "yyyy-mm-dd",
+      "mdy": "yyyy-mm-dd"
+    },
+    {
+      "cell": "2025/04/01T10:35:22Z",
+      "dmy": "yyyy/mm/dd t",
+      "mdy": "yyyy/mm/dd t"
+    },
+    {
+      "cell": "Opening",
+      "dmy": null,
+      "mdy": null
+    },
+    {
+      "cell": "31/02/2025",
+      "dmy": "dd/mm/yyyy",
+      "mdy": "mm/dd/yyyy"
+    }
+  ]
+}

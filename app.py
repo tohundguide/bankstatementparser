@@ -35,7 +35,7 @@ from extractors.text_extractor import extract_text, extract_text_info, check_ocr
 from parsers.registry import detect_bank, get_parser
 from parsers.base_parser import BaseBankParser
 from parsers import llm_parser
-from parsers.table_reader import read_table, text_fingerprint
+from parsers.table_reader import read_table, text_layout
 from exporters.excel_exporter import export_to_excel, export_to_csv
 from statement_merger import merge_statements, verification_stats
 from api_auth import require_api_key
@@ -72,7 +72,7 @@ app.config['FEEDBACK_FOLDER'] = os.path.join(DATA_DIR, 'feedback')
 # The parser's own version: in /status, in every /api/v1 answer (the field and
 # the X-Parser-Version header) and kept by a reader beside every statement it
 # read, so a release that changes a reading can name the statements it touched.
-PARSER_VERSION = '2.4.0'
+PARSER_VERSION = '2.5.0'
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -306,6 +306,7 @@ def build_api_response(result, transactions, *, used_llm, read_method, pages_see
         'total_transactions': len(transactions),
         'txn_count': len(transactions),
         'layout_fingerprint': result.get('layout_fingerprint'),
+        'layout_shape': result.get('layout_shape'),
         'column_map': result.get('column_map') or ({'reader': 'ai'} if used_llm else
                                                    {'reader': 'bank', 'bank_code': result.get('bank_code')}),
         'period': result.get('period', 'N/A'),
@@ -365,6 +366,12 @@ def _cleanup_old_files():
 
 _cleanup_thread = threading.Thread(target=_cleanup_old_files, daemon=True)
 _cleanup_thread.start()
+
+
+def _bank_code_of(code):
+    """A bank a parser knows, as the layout's fourth part; never 'auto', 'table' or anything a caller typed."""
+    c = str(code or '').strip().lower()
+    return c if c and c not in ('auto', 'table', 'ai', 'bank') and get_parser(c) is not None else None
 
 
 @app.after_request
@@ -1360,6 +1367,9 @@ def status():
             'contract': 'v1',
             # R2 (2.4.0): a text PDF no bank parser knows is read by its table on /api/v1/parse
             'table_reader': True,
+            # 2.5.0: layout_shape, and POST /api/v1/report + /api/v1/report/forget for Karr
+            'layout_shape': True,
+            'karr_report': True,
         }
     })
 
@@ -1383,6 +1393,93 @@ def api_docs():
         ai_available=llm_parser.is_available(),
         parser_version=PARSER_VERSION,
     )
+
+
+# ── Karr: "Send this statement to Karr" (2.5.0; Karr bankbest-i i-5, BANK_BEST_SPEC §10.3) ──
+# A statement no reader could read, sent by a Karr client who pressed the button and agreed to the words
+# beside it. Kept in the same store as "report a problem" (FEEDBACK_FOLDER, swept at FEEDBACK_KEEP_DAYS)
+# and nowhere else: no name of the file, no business, no person; the layout's fingerprint and the reason
+# only, so the file can be found and deleted the day its layout is fixed (/api/v1/report/forget).
+_REPORT_FP = re.compile(r'^[0-9a-f]{16}$')
+_REPORT_REASON = re.compile(r'^[a-z_]{1,40}$')
+_REPORT_ID = re.compile(r'^karr_[0-9]{8}_[0-9]{6}_[0-9a-f]{12}$')
+_REPORT_EXT = {'.pdf', '.docx', '.xlsx', '.xls', '.csv', '.txt', '.ofx', '.png', '.jpg', '.jpeg', '.webp'}
+
+
+def _karr_reports(fingerprint=None, report_id=None):
+    """The stored Karr reports matching a fingerprint or an id: (dir, metadata)."""
+    import json
+    root = app.config['FEEDBACK_FOLDER']
+    out = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return out
+    for name in names:
+        if not name.startswith('karr_'):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(os.path.join(path, 'metadata.json'), encoding='utf-8') as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if (report_id and name == report_id) or (fingerprint and meta.get('fingerprint') == fingerprint):
+            out.append((path, meta))
+    return out
+
+
+@app.route('/api/v1/report', methods=['POST'])
+@require_api_key
+def api_report():
+    """Keep one statement a Karr client chose to send, for at most FEEDBACK_KEEP_DAYS days."""
+    import json
+    import secrets
+    if str(request.form.get('consent', '')).lower() != 'true':
+        return jsonify({'success': False, 'code': 'NO_CONSENT', 'error': 'The person did not agree to send it.'}), 400
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'success': False, 'code': 'NO_FILE', 'error': 'No file.'}), 400
+    ext = os.path.splitext(upload.filename)[1].lower()
+    if ext not in _REPORT_EXT:
+        return jsonify({'success': False, 'code': 'UNSUPPORTED_FORMAT', 'error': 'Not a statement file.'}), 415
+    fp = request.form.get('fingerprint', '').strip()
+    reason = request.form.get('reason', '').strip()
+    report_id = f"karr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(6)}"
+    path = os.path.join(app.config['FEEDBACK_FOLDER'], report_id)
+    os.makedirs(path, exist_ok=True)
+    upload.save(os.path.join(path, f'statement{ext}'))
+    meta = {
+        'source': 'karr',
+        'fingerprint': fp if _REPORT_FP.match(fp) else None,
+        'reason': reason if _REPORT_REASON.match(reason) else None,
+        'consent': True,
+        'consented_at': request.form.get('consented_at', '')[:40],
+        'submitted_at': datetime.now().isoformat(),
+        'keep_days': FEEDBACK_KEEP_DAYS,
+        'file_ext': ext,
+    }
+    with open(os.path.join(path, 'metadata.json'), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2)
+    print(f"  [REPORT] Karr statement kept: {report_id} (layout {meta['fingerprint'] or 'unknown'})")
+    return jsonify({'success': True, 'report_id': report_id, 'keep_days': FEEDBACK_KEEP_DAYS})
+
+
+@app.route('/api/v1/report/forget', methods=['POST'])
+@require_api_key
+def api_report_forget():
+    """Delete the Karr reports of a layout now fixed (or one report by its id); answers how many went."""
+    import shutil
+    data = request.get_json(silent=True) or {}
+    fp = str(data.get('fingerprint') or '').strip()
+    rid = str(data.get('report_id') or '').strip()
+    if not _REPORT_FP.match(fp) and not _REPORT_ID.match(rid):
+        return jsonify({'success': False, 'code': 'BAD_REQUEST', 'error': 'A fingerprint or a report id.'}), 400
+    gone = 0
+    for path, _meta in _karr_reports(fingerprint=fp if _REPORT_FP.match(fp) else None, report_id=rid if _REPORT_ID.match(rid) else None):
+        shutil.rmtree(path, ignore_errors=True)
+        gone += 1
+    return jsonify({'success': True, 'deleted': gone})
 
 
 @app.route('/api/v1/status')
@@ -1714,10 +1811,11 @@ def api_parse():
                 result = None
 
         if result and not result.get('layout_fingerprint'):
-            result['layout_fingerprint'] = text_fingerprint(raw_text, 'ai' if used_llm else (bank_code or 'bank'))
+            result['layout_fingerprint'], result['layout_shape'] = text_layout(raw_text, _bank_code_of(bank_code))
 
         if not result:
             ai_available = llm_parser.is_available()
+            unread_fp, unread_shape = text_layout(raw_text, _bank_code_of(bank_code))
             return jsonify({
                 'error': ("No parser knows this statement's layout, and AI was not allowed (allow_ai=false)."
                           if ai_available and not allow_ai
@@ -1727,7 +1825,8 @@ def api_parse():
                 'ai_allowed': allow_ai,
                 'parser_version': PARSER_VERSION,
                 # the shape that was not read, so it can be counted (never a word of the statement)
-                'layout_fingerprint': text_fingerprint(raw_text, 'unread'),
+                'layout_fingerprint': unread_fp,
+                'layout_shape': unread_shape,
             }), 400
 
         # 6. Build full transaction list

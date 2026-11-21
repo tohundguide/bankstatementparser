@@ -27,10 +27,11 @@ to the next rung (or refuses).
 Nothing is learned or kept: the file is read in memory and forgotten.
 """
 
-import hashlib
 import re
 from datetime import date
 from typing import Dict, List, Optional, Tuple
+
+from parsers.layout_shape import fingerprint as shape_fingerprint, shape_of_roles
 
 MONTHS = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
           'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
@@ -47,8 +48,8 @@ _MARK = re.compile(r'^(Cr|Dr|CR|DR)\.?$')
 _PAGE = re.compile(r'^page\s*\d+(\s*(of|/)\s*\d+)?$', re.IGNORECASE)
 _SKIP_LABEL = re.compile(r'opening|closing|brought\s+forward|carried\s+forward|\bb/?f\b|\bc/?f\b|total', re.IGNORECASE)
 
-# Header words by what the column holds. Only these words ever enter a fingerprint:
-# a heading is the bank's, never the customer's.
+# Header words by what the column holds. Only their roles ever enter a fingerprint
+# (parsers/layout_shape.py): a heading is the bank's, never the customer's.
 HEADER_VOCAB = {
     'date': 'date', 'txn': 'date', 'tran': 'date', 'transaction': 'date', 'posting': 'date', 'value': 'value_date',
     'narration': 'narration', 'particulars': 'narration', 'description': 'narration', 'details': 'narration', 'remarks': 'narration',
@@ -152,18 +153,29 @@ def is_header(line: List[dict]) -> bool:
         bool(roles & {'withdrawal', 'deposit', 'amount'})
 
 
-def fingerprint(reader: str, header_roles: List[str]) -> str:
-    """The layout's shape and nothing else: who read it and its headings by kind, in order."""
-    return hashlib.sha256(f"v1|{reader}|{','.join(header_roles)}".encode()).hexdigest()[:16]
+def layout_of_roles(header_roles: List[str], first_day: Optional[str], month_first: bool = False,
+                    bank: Optional[str] = None) -> Tuple[str, Dict]:
+    """The layout's fingerprint and shape (2.5.0, parsers/layout_shape.py): its heading roles, their kinds,
+    the date's shape and the bank, never a word of the customer's."""
+    shape = shape_of_roles(header_roles, first_day, 'mdy' if month_first else 'dmy', bank)
+    return shape_fingerprint(shape), shape
 
 
-def text_fingerprint(raw_text: str, reader: str) -> str:
-    """The same fingerprint from plain text (a bank parser's read): the first heading line found."""
+def text_layout(raw_text: str, bank: Optional[str] = None) -> Tuple[str, Dict]:
+    """The same from plain text (a bank parser's read, or none): the first heading line, the first dated line."""
+    roles: List[str] = []
+    first_day = None
     for line in (raw_text or '').splitlines():
         words = [{'text': t} for t in line.split()]
-        if is_header(words):
-            return fingerprint(reader, _header_roles(words))
-    return fingerprint(reader, [])
+        if not roles and is_header(words):
+            roles = _header_roles(words)
+            continue
+        if roles and first_day is None:
+            day, _n = _leading_date(words)
+            if day:
+                first_day = day
+                break
+    return layout_of_roles(roles, first_day, bank=bank)
 
 
 class Refused(Exception):
@@ -430,6 +442,7 @@ def read_table_pages(pages_lines, raw_text: str = '') -> Optional[Dict]:
         'date_order': date_order,
     }
     first, last = days[order[0]], days[order[-1]]
+    fp, shape = layout_of_roles(header_roles, rows[0]['day'], month_first=(date_order == 'month_first'))
     return {
         'bank_name': _bank_name(raw_text),
         'bank_code': 'table',
@@ -442,7 +455,8 @@ def read_table_pages(pages_lines, raw_text: str = '') -> Optional[Dict]:
         'period': _period(raw_text) or f"{first.strftime('%d/%m/%Y')} to {last.strftime('%d/%m/%Y')}",
         'transactions': transactions,
         'column_map': column_map,
-        'layout_fingerprint': fingerprint('table', header_roles),
+        'layout_fingerprint': fp,
+        'layout_shape': shape,
         'warnings': [f'No bank parser knows this layout: Karr read it by its table ({layout.replace("_", " ")}, '
                      f'{column_map["row_order"].replace("_", " ")}), and every balance follows from the one before.'],
     }
