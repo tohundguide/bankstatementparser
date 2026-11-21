@@ -35,6 +35,7 @@ from extractors.text_extractor import extract_text, extract_text_info, check_ocr
 from parsers.registry import detect_bank, get_parser
 from parsers.base_parser import BaseBankParser
 from parsers import llm_parser
+from parsers.table_reader import read_table, text_fingerprint
 from exporters.excel_exporter import export_to_excel, export_to_csv
 from statement_merger import merge_statements, verification_stats
 from api_auth import require_api_key
@@ -71,7 +72,7 @@ app.config['FEEDBACK_FOLDER'] = os.path.join(DATA_DIR, 'feedback')
 # The parser's own version: in /status, in every /api/v1 answer (the field and
 # the X-Parser-Version header) and kept by a reader beside every statement it
 # read, so a release that changes a reading can name the statements it touched.
-PARSER_VERSION = '2.3.0'
+PARSER_VERSION = '2.4.0'
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -256,6 +257,12 @@ def build_api_response(result, transactions, *, used_llm, read_method, pages_see
     and the figures the parser filled in itself (balance_source 'computed',
     amount_source 'inferred', the 'filled' counts, a sentence in warnings).
     /api/v1 only grows: a breaking change is /api/v2.
+
+    2.4.0 (bankbest-b) adds txn_count (every dated line read, money or not),
+    layout_fingerprint (the layout's shape: who read it and its headings by
+    kind, never a word of the customer's) and column_map (how the columns were
+    read: {reader: 'bank', bank_code} for a bank's own parser, {reader: 'ai'},
+    or R2's {reader: 'table', columns, amounts, money_out, row_order, date_order}).
     """
     info = result.get('account_info') or {}
     period_from, period_to = _period_bounds(result.get('period'))
@@ -297,6 +304,10 @@ def build_api_response(result, transactions, *, used_llm, read_method, pages_see
         'opening_balance': info.get('opening_balance') or None,
         'closing_balance': info.get('closing_balance') or None,
         'total_transactions': len(transactions),
+        'txn_count': len(transactions),
+        'layout_fingerprint': result.get('layout_fingerprint'),
+        'column_map': result.get('column_map') or ({'reader': 'ai'} if used_llm else
+                                                   {'reader': 'bank', 'bank_code': result.get('bank_code')}),
         'period': result.get('period', 'N/A'),
         'period_from': period_from,
         'period_to': period_to,
@@ -1347,6 +1358,8 @@ def status():
             # is PARSE_FAILED, never the parser's own AI (contract v1).
             'allow_ai_param': True,
             'contract': 'v1',
+            # R2 (2.4.0): a text PDF no bank parser knows is read by its table on /api/v1/parse
+            'table_reader': True,
         }
     })
 
@@ -1395,6 +1408,8 @@ def api_status():
             # is PARSE_FAILED, never the parser's own AI (contract v1).
             'allow_ai_param': True,
             'contract': 'v1',
+            # R2 (2.4.0): a text PDF no bank parser knows is read by its table on /api/v1/parse
+            'table_reader': True,
         }
     })
 
@@ -1680,12 +1695,26 @@ def api_parse():
                 else:
                     result = None
 
+        # 5b. R2 (bankbest-b): a text PDF no bank parser knows reads itself by its
+        #     table, before any AI: the one layout under which every balance follows
+        #     from the one before. No single layout proves itself: no read.
+        if not result and ext == '.pdf' and read_info.get('method') == 'pdf_text':
+            result = read_table(filepath, password=password, raw_text=raw_text)
+            if result and result.get('transactions'):
+                result = post_process(result)
+            else:
+                result = None
+
         if not result and allow_ai and llm_parser.is_available():
             result = llm_parser.parse_with_llm(raw_text, persist=False)
             if result and result.get('transactions'):
                 used_llm = True
+                result['column_map'] = {'reader': 'ai'}
             else:
                 result = None
+
+        if result and not result.get('layout_fingerprint'):
+            result['layout_fingerprint'] = text_fingerprint(raw_text, 'ai' if used_llm else (bank_code or 'bank'))
 
         if not result:
             ai_available = llm_parser.is_available()
@@ -1697,6 +1726,8 @@ def api_parse():
                 'ai_available': ai_available,
                 'ai_allowed': allow_ai,
                 'parser_version': PARSER_VERSION,
+                # the shape that was not read, so it can be counted (never a word of the statement)
+                'layout_fingerprint': text_fingerprint(raw_text, 'unread'),
             }), 400
 
         # 6. Build full transaction list
@@ -1763,7 +1794,7 @@ def api_parse():
         # Optional: generate Excel/CSV and include download link
         if output_format == 'excel':
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            safe_bank_name = re.sub(r'[^\w]+', '_', result['bank_name']).strip('_')
+            safe_bank_name = re.sub(r'[^\w]+', '_', result['bank_name'] or 'Statement').strip('_')
 
             excel_filename = f"API_Statement_{safe_bank_name}_{timestamp}.xlsx"
             excel_path = os.path.join(app.config['OUTPUT_FOLDER'], excel_filename)

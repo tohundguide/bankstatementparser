@@ -76,3 +76,6 @@ Thumbs.db
 # ─── Source that the broad rules above would hide ───
 !tests/test_*.py
 !DEPLOY_RAILWAY.md
+
+# Karr's daily self-test statement: synthetic, nobody's account (bankbest-b)
+!contract/v1/karr-self-test.pdf

@@ -30,6 +30,7 @@ api_auth.reload_keys()
 
 CONTRACT_DIR = os.path.join(os.path.dirname(__file__), '..', 'contract', 'v1')
 SAMPLE = os.path.join(CONTRACT_DIR, 'sample-v1-scan.json')
+TABLE_SAMPLE = os.path.join(CONTRACT_DIR, 'sample-v1-table.json')
 SCHEMA = os.path.join(CONTRACT_DIR, 'response.schema.json')
 KEY = {'X-API-Key': 'contract-test-key'}
 
@@ -67,6 +68,28 @@ def build_sample():
     )
 
 
+def build_table_sample():
+    """2.4.0: what R2 answers for a synthetic statement no bank parser knows (one amount, Dr/Cr, newest first)."""
+    import tempfile
+    sys.path.insert(0, os.path.dirname(__file__))
+    from synth_pdf import statement_pdf
+    from parsers.table_reader import read_table
+    rows = [('01/06/2025', 'NEFT CR ACME TRADERS', 'UTR4455', 0, 25000), ('04/06/2025', 'RTGS DR SUPPLIER', 'UTR4456', 18000, 0),
+            ('04/06/2025', 'BANK CHARGES', '', 59, 0), ('30/06/2025', 'INT CREDIT', '', 0, 41.25)]
+    pdf, _ = statement_pdf(rows, opening=5000, layout='dr_cr', newest_first=True,
+                           header_lines=['Account No: XXXXXX7788', 'IFSC: ABCD0123456', 'Period: 01/06/2025 to 30/06/2025'])
+    raw = 'Account No: XXXXXX7788\nIFSC: ABCD0123456\nPeriod: 01/06/2025 to 30/06/2025\n'
+    with tempfile.NamedTemporaryFile(suffix='.pdf') as f:
+        f.write(pdf)
+        f.flush()
+        result = post_process(read_table(f.name, raw_text=raw))
+    return build_api_response(
+        result, result['transactions'],
+        used_llm=False, read_method='pdf_text', pages_seen=1, pages_stated=None,
+        verification={'matched': 3, 'total': 3, 'percent': 100.0}, preview=[],
+    )
+
+
 def load(path):
     with open(path, encoding='utf-8') as f:
         return json.load(f)
@@ -78,14 +101,21 @@ def test_sample_is_what_the_builder_answers():
     assert build_sample() == load(SAMPLE), 'contract/v1/sample-v1-scan.json is stale: python tests/test_contract_v1.py --write (and tell Karr)'
 
 
+def test_table_sample_is_what_r2_answers():
+    assert build_table_sample() == load(TABLE_SAMPLE), 'contract/v1/sample-v1-table.json is stale: --write (and tell Karr)'
+
+
 def test_every_sample_field_is_in_the_schema():
     schema = load(SCHEMA)
-    sample = load(SAMPLE)
-    assert set(sample) <= set(schema['properties']), set(sample) - set(schema['properties'])
-    line_props = set(schema['$defs']['line']['properties'])
-    for line in sample['transactions']:
-        assert set(line) <= line_props, set(line) - line_props
-    assert sample['read_by'] in schema['properties']['read_by']['enum']
+    for sample in (load(SAMPLE), load(TABLE_SAMPLE)):
+        assert set(sample) <= set(schema['properties']), set(sample) - set(schema['properties'])
+        line_props = set(schema['$defs']['line']['properties'])
+        for line in sample['transactions']:
+            assert set(line) <= line_props, set(line) - line_props
+        assert sample['read_by'] in schema['properties']['read_by']['enum']
+        cm = schema['properties']['column_map']
+        assert set(sample['column_map']) <= set(cm['properties'])
+        assert sample['column_map']['reader'] in cm['properties']['reader']['enum']
 
 
 def test_v1_fields():
@@ -100,6 +130,21 @@ def test_v1_fields():
     assert [t['seq'] for t in s['transactions']] == [1, 2, 3, 4, 5]
     assert s['transactions'][0]['value_date'] == '02-05-2025'
     assert 'value_date' not in s['transactions'][1]
+    # 2.4.0
+    assert s['txn_count'] == 5
+    assert s['column_map'] == {'reader': 'bank', 'bank_code': 'sbi'}
+    assert s['layout_fingerprint'] is None, 'the builder makes none up; the API path sets it from the text'
+
+
+def test_table_fields():
+    s = build_table_sample()
+    assert s['bank_name'] is None, 'R2 names no bank unless the IFSC the statement prints is one of ours'
+    assert s['txn_count'] == 4 and s['read_by'] == 'pdf_text'
+    assert s['column_map'] == {'reader': 'table', 'columns': ['date', 'narration', 'reference', 'amount', 'dr_cr', 'balance'],
+                               'amounts': 'dr_cr', 'money_out': 'Dr', 'row_order': 'newest_first', 'date_order': 'day_first'}
+    assert len(s['layout_fingerprint']) == 16
+    assert (s['period_from'], s['period_to']) == ('2025-06-01', '2025-06-30')
+    assert [t['balance'] for t in s['transactions']] == ['30,000.00', '12,000.00', '11,941.00', '11,982.25']
 
 
 def test_computed_balances_and_inferred_amounts_are_marked():
@@ -215,9 +260,10 @@ def test_status_says_the_contract():
 if __name__ == '__main__':
     if '--write' in sys.argv:
         os.makedirs(CONTRACT_DIR, exist_ok=True)
-        with open(SAMPLE, 'w', encoding='utf-8') as f:
-            json.dump(build_sample(), f, indent=2, ensure_ascii=False)
-            f.write('\n')
-        print(f'wrote {SAMPLE}')
+        for path, build in ((SAMPLE, build_sample), (TABLE_SAMPLE, build_table_sample)):
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(build(), f, indent=2, ensure_ascii=False)
+                f.write('\n')
+            print(f'wrote {path}')
     else:
         print('run with pytest, or --write to regenerate the sample')

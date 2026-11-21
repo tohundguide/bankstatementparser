@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tohundguide.com/tools/bankstatementparser/contract/v1/response.schema.json",
   "title": "bankstatementparser /api/v1/parse response (v1)",
-  "description": "The source. Karr keeps a copy under tests/contract/bankstatementparser/ and a test on each side reads the same sample-v1-scan.json, so whichever side drifts goes red. /api/v1 only grows: a breaking change is /api/v2.",
+  "description": "The source. Karr keeps a copy under tests/contract/bankstatementparser/ and a test on each side reads the same samples (sample-v1-scan.json, a bank's parser; sample-v1-table.json, R2 since 2.4.0), so whichever side drifts goes red. /api/v1 only grows: a breaking change is /api/v2.",
   "type": "object",
   "required": ["success"],
   "properties": {
@@ -15,6 +15,22 @@
     "opening_balance": { "type": ["string", "number", "null"], "description": "as printed; null when the statement prints none" },
     "closing_balance": { "type": ["string", "number", "null"] },
     "total_transactions": { "type": "integer" },
+    "txn_count": { "type": "integer", "description": "2.4.0: every dated line the parser read, money or not; a reader that keeps fewer says how many it left" },
+    "layout_fingerprint": { "type": ["string", "null"], "description": "2.4.0: the layout's shape (who read it and its headings by kind, sha256, 16 hex); never a word of the customer's. Also on a PARSE_FAILED answer, so an unread shape can be counted" },
+    "column_map": {
+      "type": ["object", "null"],
+      "description": "2.4.0: how the columns were read",
+      "properties": {
+        "reader": { "enum": ["bank", "table", "ai"] },
+        "bank_code": { "type": ["string", "null"] },
+        "columns": { "type": "array", "items": { "enum": ["date", "value_date", "narration", "reference", "withdrawal", "deposit", "amount", "dr_cr", "balance"] } },
+        "amounts": { "enum": ["two_columns", "signed", "dr_cr"] },
+        "money_out": { "type": "string" },
+        "row_order": { "enum": ["oldest_first", "newest_first"] },
+        "date_order": { "enum": ["day_first", "month_first"] }
+      },
+      "required": ["reader"]
+    },
     "period": { "type": "string", "description": "pre-v1: the period as a sentence ('01/04/2025 to 30/04/2025') or 'N/A'" },
     "period_from": { "type": ["string", "null"], "description": "the period PRINTED on the statement, YYYY-MM-DD; null when it prints none" },
     "period_to": { "type": ["string", "null"] },

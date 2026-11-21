@@ -1,0 +1,94 @@
+{
+  "success": true,
+  "parser_version": "2.4.0",
+  "bank_name": null,
+  "account_info": {
+    "account_number": "XXXXXX7788",
+    "ifsc": "ABCD0123456",
+    "opening_balance": "5000.00",
+    "closing_balance": "11,982.25"
+  },
+  "account_number": "XXXXXX7788",
+  "ifsc": "ABCD0123456",
+  "opening_balance": "5000.00",
+  "closing_balance": "11,982.25",
+  "total_transactions": 4,
+  "txn_count": 4,
+  "layout_fingerprint": "a45503d8b2126fb1",
+  "column_map": {
+    "reader": "table",
+    "columns": [
+      "date",
+      "narration",
+      "reference",
+      "amount",
+      "dr_cr",
+      "balance"
+    ],
+    "amounts": "dr_cr",
+    "money_out": "Dr",
+    "row_order": "newest_first",
+    "date_order": "day_first"
+  },
+  "period": "01/06/2025 to 30/06/2025",
+  "period_from": "2025-06-01",
+  "period_to": "2025-06-30",
+  "pages": {
+    "seen": 1,
+    "stated": null
+  },
+  "read_by": "pdf_text",
+  "parsed_by": "structured",
+  "verification": {
+    "matched": 3,
+    "total": 3,
+    "percent": 100.0
+  },
+  "filled": {
+    "balances": 0,
+    "amounts": 0
+  },
+  "transactions": [
+    {
+      "seq": 1,
+      "date": "01-06-2025",
+      "particulars": "NEFT CR ACME TRADERS",
+      "chq_ref": "UTR4455",
+      "withdrawal": "",
+      "deposit": "25,000.00",
+      "balance": "30,000.00"
+    },
+    {
+      "seq": 2,
+      "date": "04-06-2025",
+      "particulars": "RTGS DR SUPPLIER",
+      "chq_ref": "UTR4456",
+      "withdrawal": "18,000.00",
+      "deposit": "",
+      "balance": "12,000.00"
+    },
+    {
+      "seq": 3,
+      "date": "04-06-2025",
+      "particulars": "BANK CHARGES",
+      "chq_ref": "",
+      "withdrawal": "59.00",
+      "deposit": "",
+      "balance": "11,941.00"
+    },
+    {
+      "seq": 4,
+      "date": "30-06-2025",
+      "particulars": "INT CREDIT",
+      "chq_ref": "",
+      "withdrawal": "",
+      "deposit": "41.25",
+      "balance": "11,982.25"
+    }
+  ],
+  "preview": [],
+  "warnings": [
+    "No bank parser knows this layout: Karr read it by its table (dr cr, newest first), and every balance follows from the one before."
+  ],
+  "ocr_corrections": []
+}
